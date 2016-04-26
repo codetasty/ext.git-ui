@@ -254,7 +254,7 @@ define(function(require, exports, module) {
 				
 				lines = lines.split("\n");
 				var first = lines.shift().substr(2);
-				var branch = first.trim().match(/^([^\. ]+)/);
+				var branch = first.trim().match(/^Initial commit on (\S+)/) || first.trim().match(/^([^\. ]+)/);
 				if (branch) {
 					status.branch = branch[1];
 				}
@@ -805,7 +805,7 @@ define(function(require, exports, module) {
 				$content.find('.extension-git-list .git-item:not(.binded)')
 				.addClass('binded').find('.action-delete').click(function() {
 					var $item = $(this).parents('.git-item').eq(0);
-					var name = $item.find('.name').text();
+					var name = $item.attr('data-name');
 					
 					Popup.confirm({
 						title: 'Git - Delete a remote',
