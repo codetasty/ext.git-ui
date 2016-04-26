@@ -875,8 +875,8 @@ define(function(require, exports, module) {
 				
 				$content.find('.actions').append(Popup.createBtn('Fetch', 'black', function() {
 					var url = remote.url;
-					var username = $content.find(':input[name="input-username"]').val().trim();
-					var password = $content.find(':input[name="input-password"]').val().trim();
+					var username = ($content.find(':input[name="input-username"]').val() || '').trim();
+					var password = ($content.find(':input[name="input-password"]').val() || '').trim();
 					var save = $content.find(':input[name="input-save"]').is(':checked');
 					
 					var urlData = Extension.parseUrl(url, username, password, save);
@@ -956,13 +956,11 @@ define(function(require, exports, module) {
 				$content.find('.actions').append(Popup.createBtn('Pull', 'black', function() {
 					var branch = $content.find(':input[name="input-branch"]').val();
 					var type = $content.find(':input[name="input-type"]:checked').attr('value');
-					var username = $content.find(':input[name="input-username"]').val().trim();
-					var password = $content.find(':input[name="input-password"]').val().trim();
 					var tracking = $content.find(':input[name="input-tracking"]').is(':checked');
 					
 					var url = remote.url;
-					var username = $content.find(':input[name="input-username"]').val().trim();
-					var password = $content.find(':input[name="input-password"]').val().trim();
+					var username = ($content.find(':input[name="input-username"]').val() || '').trim();
+					var password = ($content.find(':input[name="input-password"]').val() || '').trim();
 					var save = $content.find(':input[name="input-save"]').is(':checked');
 					
 					var urlData = Extension.parseUrl(url, username, password, save);
@@ -1066,12 +1064,10 @@ define(function(require, exports, module) {
 				$content.find('.actions').append(Popup.createBtn('Push', 'black', function() {
 					var branch = $content.find(':input[name="input-branch"]').val();
 					var type = $content.find(':input[name="input-type"]:checked').attr('value');
-					var username = $content.find(':input[name="input-username"]').val().trim();
-					var password = $content.find(':input[name="input-password"]').val().trim();
 					
 					var url = remote.url;
-					var username = $content.find(':input[name="input-username"]').val().trim();
-					var password = $content.find(':input[name="input-password"]').val().trim();
+					var username = ($content.find(':input[name="input-username"]').val() || '').trim();
+					var password = ($content.find(':input[name="input-password"]').val() || '').trim();
 					var save = $content.find(':input[name="input-save"]').is(':checked');
 					
 					var urlData = Extension.parseUrl(url, username, password, save);
