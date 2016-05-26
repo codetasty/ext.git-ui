@@ -425,8 +425,8 @@ define(function(require, exports, module) {
 					});
 				}).end().find('.git-folder > .inner .name').click(function() {
 					$(this).parents('.git-folder').eq(0).children('ul').stop().slideToggle(300);
-				}).end().find('.folder').each(function() {
-					if (!$(this).children('ul').children('li.git-file:not(.selected)').length) {
+				}).end().find('.git-folder').each(function() {
+					if (!$(this).find('li.git-file:not(.selected)').length) {
 						$(this).addClass('selected');
 					} else {
 						$(this).removeClass('selected');
@@ -446,7 +446,9 @@ define(function(require, exports, module) {
 					}
 				});
 				
-				$content.find('.actions').append(Popup.createBtn('Commit', 'black', function() {
+				var openPush = false;
+				
+				var commit = function() {
 					var message = $content.find('.input-message').val().trim();
 					
 					if (!message) {
@@ -470,10 +472,23 @@ define(function(require, exports, module) {
 							description: 'Updates were successfully commited',
 							autoClose: true
 						});
+						
+						Extension.action.getRemotes(workspaceId, function() {
+							Extension.remotes.popup(workspaceId);
+						});
 					});
 					Popup.close($content);
 					
 					return false;
+				};
+				
+				$content.find('.actions').append(Popup.createBtn('Commit', 'black', function() {
+					openPush = false;
+					return commit();
+				}));
+				$content.find('.actions').append(Popup.createBtn('Commit and push', 'black', function() {
+					openPush = true;
+					return commit();
 				}));
 				$content.find('.actions').append(Popup.createBtn('Cancel', 'black'));
 				$content.find('.actions').append($amend);
