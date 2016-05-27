@@ -473,9 +473,11 @@ define(function(require, exports, module) {
 							autoClose: true
 						});
 						
-						Extension.action.getRemotes(workspaceId, function() {
-							Extension.remotes.popup(workspaceId);
-						});
+						if (openPush) {
+							Extension.action.getRemotes(workspaceId, function() {
+								Extension.remotes.popup(workspaceId);
+							});
+						}
 					});
 					Popup.close($content);
 					
