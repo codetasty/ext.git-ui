@@ -651,6 +651,7 @@ define(function(require, exports, module) {
 					Popup.confirm({
 						title: 'Git - Delete a branch',
 						content: 'Are you sure to delete <strong>' + name + '</strong> branch?',
+						name: 'Yes',
 						callback: function() {
 							Extension.action.deleteBranch(workspaceId, name, true, function(deleted, branches, branch) {
 								if (deleted) {
@@ -827,6 +828,7 @@ define(function(require, exports, module) {
 					Popup.confirm({
 						title: 'Git - Delete a remote',
 						content: 'Are you sure to delete <strong>' + name + '</strong> remote?',
+						name: 'Yes',
 						callback: function() {
 							Extension.action.deleteRemote(workspaceId, name, function(deleted, remotes) {
 								if (deleted) {
