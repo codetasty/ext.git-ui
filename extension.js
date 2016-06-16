@@ -263,7 +263,7 @@ define(function(require, exports, module) {
 					var statusStaged = line.substring(0, 1),
 						statusUnstaged = line.substring(1, 2),
 						fileStatus = [],
-						file = line.substring(3);
+						file = line.substring(3).replace(/\"/gi, '');
 					
 					if (statusStaged !== " " && statusUnstaged !== " " &&
 						statusStaged !== "?" && statusUnstaged !== "?") {
@@ -430,6 +430,10 @@ define(function(require, exports, module) {
 						$(this).addClass('selected');
 					} else {
 						$(this).removeClass('selected');
+					}
+					
+					if (!$(this).find('li.git-file.selected').length) {
+						$(this).children('ul').hide();
 					}
 				});
 				
@@ -1599,6 +1603,15 @@ define(function(require, exports, module) {
 						});
 						return arr;
 					}, []);
+					
+					if (!branches.length) {
+						branches.push({
+							name: 'master',
+							remote: null
+						});
+						
+						current = 'master';
+					}
 					
 					Extension.update(workspaceId, {
 						branches: branches,
