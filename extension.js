@@ -75,17 +75,28 @@ define(function(require, exports, module) {
 			var workspaceId = Workspace.getStorage().active;
 			var data = this._data[workspaceId];
 			var items = [{
-				label: 'Refresh status',
-				exec: function() {
-					Extension.action.status(workspaceId);
-				}
-			}, {
 				label: 'Settings',
-				spacer: true,
 				exec: function() {
 					Extension.settings.popup();
 				}
 			}];
+			
+			if (data) {
+				items.push({
+					label: 'Directory: <strong>' + data.directory + '</strong>',
+					exec: function() {
+						Extension.directory.popup(workspaceId);
+					}
+				});
+			}
+			
+			items.push({
+				label: 'Refresh status',
+				spacer: true,
+				exec: function() {
+					Extension.action.status(workspaceId);
+				}
+			});
 			
 			if (data && data.initialised) {
 				items.push({
@@ -169,12 +180,16 @@ define(function(require, exports, module) {
 			return items;
 		},
 		onWorkspaceConnected: function(workspaceId) {
+			var directory = Workspace.getStorage().sessions[workspaceId].settings.gitDirectory;
+			directory = directory ? directory : '/';
+			
 			this._data[workspaceId] = {
 				initialised: false,
 				branch: null,
 				branches: [],
 				remotes: [],
-				files: []
+				files: [],
+				directory: directory
 			};
 			
 			this.action.status(workspaceId, function() {
@@ -192,16 +207,75 @@ define(function(require, exports, module) {
 			}
 			
 			if (obj === null) {
-				this._data[workspaceId] = {
+				obj = {
 					initialised: false,
 					branch: null,
 					branches: [],
 					remotes: [],
 					files: []
 				};
-			} else {
-				for (var i in obj) {
-					this._data[workspaceId][i] = obj[i];
+			}
+			
+			for (var i in obj) {
+				this._data[workspaceId][i] = obj[i];
+			}
+		},
+		directory: {
+			popup: function(workspaceId) {
+				var $content = $('<div>\
+					<div class="message">\
+						<form autocomplete="false"><fieldset>\
+							<dl>\
+								<dt>Directory</dt>\
+								<dd><input type="text" name="input-directory" placeholder="/"></dd>\
+							</dl>\
+						</fieldset></form>\
+						<div class="error"></div>\
+					</div>\
+					<div class="actions"></div>\
+				</div>');
+				
+				$content.find(':input[name="input-directory"]').val(Extension._data[workspaceId].directory).cautocomplete({
+					prependIfNotPresent: '/',
+					source: (function() {
+						var folders = [];
+						
+						Editor.$element.find('.editor-explorer .list-workspace[data-workspace="' + workspaceId + '"] .row.folder').each(function() {
+							folders.push($(this).attr('data-path'));
+						});
+						
+						return folders;
+					}())
+				});
+				
+				$content.find('.actions').append(Popup.createBtn('Save', 'black', function() {
+					var directory = $content.find(':input[name="input-directory"]').val().trim();
+					if (directory.substr(0, 1) != '/') {
+						directory = '/' + directory;
+					}
+					
+					Extension.directory.setPath(workspaceId, directory);
+					
+					Popup.close($content);
+					
+					return false;
+				}));
+				$content.find('.actions').append(Popup.createBtn('Cancel', 'black'));
+				
+				Popup.open({
+					title: 'Git - Directory',
+					content: $content,
+					namespace: 'editor.git'
+				});
+			},
+			setPath: function(workspaceId, directory) {
+				if (Extension._data[workspaceId]) {
+					Extension._data[workspaceId].directory = directory;
+					
+					Workspace.getStorage().sessions[workspaceId].settings.gitDirectory = directory;
+					Workspace.saveStorage();
+					
+					Extension.action.status(workspaceId);
 				}
 			}
 		},
@@ -252,7 +326,7 @@ define(function(require, exports, module) {
 					needReset: []
 				};
 				
-				lines = lines.split("\n");
+				lines = (lines || '').split("\n");
 				var first = lines.shift().substr(2);
 				var branch = first.trim().match(/^Initial commit on (\S+)/) || first.trim().match(/^([^\. ]+)/);
 				if (branch) {
@@ -1489,7 +1563,7 @@ define(function(require, exports, module) {
 				
 				Socket.send('workspace.action', {
 					id: workspaceId,
-					path: '/',
+					path: Extension._data[workspaceId].directory || '/',
 					action: 'exec',
 					command: commands.map(function(command) {
 						return 'git ' + command;
