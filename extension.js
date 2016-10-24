@@ -869,6 +869,7 @@ define(function(require, exports, module) {
 				var $list = $content.find('.extension-git-list > ul');
 				
 				$list.children().addClass('check');
+				
 				remotes.forEach(function(remote) {
 					var cleanRemoteUrl = remote.url.replace(/^http(s?):\/\/(.*)\@(.*)$/, 'http$1://$3');
 					
@@ -889,9 +890,7 @@ define(function(require, exports, module) {
 					$remote.find('.col').eq(2).append('<div class="action action-pull">Pull</div>');
 					$remote.find('.col').eq(2).append('<div class="action action-push">Push</div>');
 					
-					if (remote.name != 'origin') {
-						$remote.find('.col').eq(2).append('<div class="action action-delete nc-icon-outline ui-1_simple-remove"></div>');
-					}
+					$remote.find('.col').eq(2).append('<div class="action action-delete nc-icon-outline ui-1_simple-remove"></div>');
 					
 					$list.append($remote);
 				});
@@ -1757,6 +1756,16 @@ define(function(require, exports, module) {
 						});
 						return arr;
 					}, []);
+					
+					remotes.sort(function(a, b) {
+						if (a.name == 'origin') {
+							return -1;
+						} else if (b.name == 'origin') {
+							return 1;
+						} else {
+							return a.name > b.name;
+						}
+					});
 					
 					Extension.update(workspaceId, {
 						remotes: remotes
