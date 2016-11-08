@@ -1,17 +1,23 @@
 define(function(require, exports, module) {
-	var ExtensionManager = require('code/extensionManager');
+	var ExtensionManager = require('core/extensionManager');
 	
-	var Code = require('code/code');
-	var Socket = require('code/socket');
-	var Workspace = require('code/workspace');
-	var Notification = require('code/notification');
-	var Fn = require('code/fn');
-	var FileManager = require('code/fileManager');
-	var Popup = require('code/popup');
+	var App = require('core/app');
+	var Socket = require('core/socket');
+	var Workspace = require('core/workspace');
+	var Notification = require('core/notification');
+	var Fn = require('core/fn');
+	var FileManager = require('core/fileManager');
+	var Popup = require('core/popup');
 	
+	
+	var HomeSettings = require('modules/home/ext/settings');
 	var Editor = require('modules/editor/editor');
 	var Explorer = require('modules/explorer/explorer');
-	var EditorSession;
+	var EditorSession = require('modules/editor/ext/session');
+	
+	var MenuIcon = require('text!./menu.svg');
+	
+	var GitUtils = require('./utils');
 	
 	var FILE_STATUS = {
 		STAGED: "STAGED",
@@ -42,7 +48,9 @@ define(function(require, exports, module) {
 	var Extension = ExtensionManager.register({
 		name: 'git',
 		storage: {
-			author: '',
+			name: '',
+			email: '',
+			useVerboseDiff: false,
 		},
 		css: [
 			'extension'
@@ -52,7 +60,29 @@ define(function(require, exports, module) {
 		init: function() {
 			var self = this;
 			
-			EditorSession = require('modules/editor/ext/session');
+			GitUtils.setExtension(this);
+			
+			HomeSettings.add(this.name, {
+				label: 'Git',
+				icon: MenuIcon,
+				sections: [{
+					title: 'Git',
+					module: this.path,
+					fields: [{
+						name: 'name',
+						label: 'Name',
+						type: 'text'
+					}, {
+						name: 'email',
+						label: 'Email',
+						type: 'text'
+					}, {
+						name: 'useVerboseDiff',
+						label: 'Show verbose output in diffs',
+						type: 'checkbox',
+					}]
+				}]
+			});
 			
 			Editor.addToMenu('tools', {
 				label: 'Git',
@@ -74,12 +104,7 @@ define(function(require, exports, module) {
 		getMenuChildren: function() {
 			var workspaceId = Workspace.getStorage().active;
 			var data = this._data[workspaceId];
-			var items = [{
-				label: 'Settings',
-				exec: function() {
-					Extension.settings.popup();
-				}
-			}];
+			var items = [];
 			
 			if (data) {
 				items.push({
@@ -102,33 +127,31 @@ define(function(require, exports, module) {
 				items.push({
 					label: 'Status',
 					exec: function() {
-						Extension.action.status(workspaceId, function() {
+						Extension.action.status(workspaceId).done(function() {
 							Extension.status.popup(workspaceId);
 						});
 					}
 				}, {
 					label: 'Branch: <strong>' + data.branch + '</strong>',
 					exec: function() {
-						Extension.action.getBranches(workspaceId, function() {
+						Extension.action.getBranches(workspaceId).done(function() {
 							Extension.branches.popup(workspaceId);
 						});
 					}
 				}, {
 					label: 'Remotes',
 					exec: function() {
-						Extension.action.getRemotes(workspaceId, function() {
+						Extension.action.getRemotes(workspaceId).done(function() {
 							Extension.remotes.popup(workspaceId);
 						});
 					}
 				}, {
 					label: 'History',
 					exec: function() {
-						Extension.action.getHistory(workspaceId, data.branch, null, null, function(out, err) {
-							if (!err) {
-								Extension.history.popup(workspaceId, null, out);
-							} else {
-								Extension.onResult(out, err);
-							}
+						Extension.action.getHistory(workspaceId, data.branch, null, null).done(function(out) {
+							Extension.history.popup(workspaceId, null, out);
+						}).fail(function(err) {
+							Extension.onResult(null, err);
 						});
 					}
 				}, {
@@ -136,7 +159,12 @@ define(function(require, exports, module) {
 					isAvailable: function() {
 						var file = EditorSession.getActive('file');
 						
-						return file && EditorSession.getStorage().sessions[file].workspaceId == workspaceId;
+						var session = EditorSession.getStorage().sessions[file];
+						
+						var directory = Extension._data[workspaceId].directory || '';
+						directory = directory == '/' ? '' : directory;
+						
+						return file && session.workspaceId == workspaceId && session.path.substr(0, directory.length + 1) == directory + '/';
 					},
 					exec: function() {
 						var session = EditorSession.getStorage().sessions[EditorSession.getActive('file')];
@@ -145,12 +173,13 @@ define(function(require, exports, module) {
 							return;
 						}
 						
-						Extension.action.getHistory(workspaceId, data.branch, 0, session.path.substr(1), function(out, err) {
-							if (!err) {
-								Extension.history.popup(workspaceId, session.path.substr(1), out);
-							} else {
-								Extension.onResult(out, err);
-							}
+						var directory = Extension._data[workspaceId].directory || '';
+						directory = directory == '/' ? '' : directory;
+						
+						Extension.action.getHistory(workspaceId, data.branch, 0, session.path.substr(directory.length + 1)).done(function(out) {
+							Extension.history.popup(workspaceId, session.path, out);
+						}).fail(function(err) {
+							Extension.onResult(null, err);
 						});
 					}
 				});
@@ -158,15 +187,15 @@ define(function(require, exports, module) {
 				items.push({
 					label: 'Init',
 					exec: function() {
-						Extension.action.init(workspaceId, function(out, err) {
-							if (!err) {
-								Notification.open({
-									type: 'success',
-									title: 'Git',
-									description: 'Repository was successfully created',
-									autoClose: true
-								});
-							}
+						Extension.action.init(workspaceId).done(function() {
+							Notification.open({
+								type: 'success',
+								title: 'Git',
+								description: 'Repository was successfully created.',
+								autoClose: true
+							});
+							
+							Extension.action.status(workspaceId);
 						});
 					}
 				}, {
@@ -192,9 +221,9 @@ define(function(require, exports, module) {
 				directory: directory
 			};
 			
-			this.action.status(workspaceId, function() {
+			this.action.status(workspaceId).always(function() {
 				if (Workspace.getStorage().active == workspaceId) {
-					Code.trigger('observe', {name: 'editor-git'});
+					App.trigger('observe', {name: 'editor-git'});
 				}
 			});
 		},
@@ -279,44 +308,6 @@ define(function(require, exports, module) {
 				}
 			}
 		},
-		settings: {
-			popup: function() {
-				var $content = $('<div>\
-					<div class="message">\
-						<form autocomplete="false"><fieldset>\
-							<dl>\
-								<dt>Author</dt>\
-								<dd><input type="text" name="input-author" placeholder="Full name &lt;email@domain.com&gt;">\
-									<p>Optional, if empty, default setting will be used.</p>\
-								</dd>\
-							</dl>\
-						</fieldset></form>\
-						<div class="error"></div>\
-					</div>\
-					<div class="actions"></div>\
-				</div>');
-				
-				$content.find(':input[name="input-author"]').val(Extension.getStorage().author);
-				
-				$content.find('.actions').append(Popup.createBtn('Save', 'black', function() {
-					var author = $content.find(':input[name="input-author"]').val().trim();
-					
-					Extension.getStorage().author = author;
-					Extension.saveStorage();
-					
-					Popup.close($content);
-					
-					return false;
-				}));
-				$content.find('.actions').append(Popup.createBtn('Cancel', 'black'));
-				
-				Popup.open({
-					title: 'Git - Settings',
-					content: $content,
-					namespace: 'editor.git'
-				});
-			}
-		},
 		status: {
 			parse: function(lines) {
 				var status = {
@@ -384,16 +375,6 @@ define(function(require, exports, module) {
 						file: file,
 						name: file.substring(file.lastIndexOf("/") + 1)
 					});
-				});
-				
-				status.files.sort(function(a, b) {
-					if (a.file < b.file) {
-						return -1;
-					}
-					if (a.file > b.file) {
-						return 1;
-					}
-					return 0;
 				});
 				
 				return status;
@@ -464,6 +445,21 @@ define(function(require, exports, module) {
 						</div>\
 					</li>');
 					
+					var allowDiff = file.status.indexOf(FILE_STATUS.UNTRACKED) === -1 &&
+						file.status.indexOf(FILE_STATUS.RENAMED) === -1 &&
+						file.status.indexOf(FILE_STATUS.DELETED) === -1;
+					var allowDelete = file.status.indexOf(FILE_STATUS.UNTRACKED) !== -1 ||
+						file.status.indexOf(FILE_STATUS.STAGED) !== -1 &&
+						file.status.indexOf(FILE_STATUS.ADDED) !== -1;
+					var allowUndo = !allowDelete;
+					
+					if (allowDiff) {
+						$file.find('.col').eq(2).append('<div class="action action-diff">Diff</div>');
+					}
+					if (allowUndo) {
+						$file.find('.col').eq(2).append('<div class="action action-discard">Discard</div>');
+					}
+					
 					$file.find('.name .filename').html(file.name)
 					.end().find('.name .status').text((file.status.map(function(status) {
 						return FILE_STATUS_NAMES[status];
@@ -474,6 +470,46 @@ define(function(require, exports, module) {
 					}
 					
 					$list.append($file);
+				});
+				
+				$content.find('.extension-git-list ul').on('click', '.action-diff', function() {
+					var $file = $(this).parents('.git-file').eq(0);
+					
+					Extension.action.diffFile(workspaceId, $file.attr('data-file')).done(function(out) {
+						var diff = GitUtils.formatDiff(out);
+						
+						var $content = $('<div>\
+							<div class="extension-git-diff">\
+								<table><tbody></tbody></table>\
+							</div>\
+						</div>');
+						
+						$content.find('table tbody').append(diff);
+						
+						Popup.open({
+							title: 'Git - Diff (' + $file.attr('data-file') + ')',
+							content: $content,
+							namespace: 'editor.git',
+						});
+					});
+				}).on('click', '.action-discard', function() {
+					var $file = $(this).parents('.git-file').eq(0);
+					
+					Popup.confirm({
+						title: __('Confirm'),
+						content: __('Are you sure to discard changes in <strong>%s</strong> file?', $file.attr('data-file')),
+						name: __('Reset'),
+						namespace: Extension.name,
+						callback: function() {
+							Extension.action.unstage(workspaceId, $file.attr('data-file')).done(function() {
+								Extension.action.checkout(workspaceId, $file.attr('data-file')).done(function() {
+									Extension.action.status(workspaceId, $file.attr('data-file')).done(function(files) {
+										Extension.status.update(workspaceId, $file, files);
+									});
+								});
+							})
+						}
+					});
 				});
 				
 				$content.find('.extension-git-list ul').find('.checkbox').click(function() {
@@ -494,8 +530,10 @@ define(function(require, exports, module) {
 					
 					var path = $li.hasClass('git-file') ? $li.attr('data-file') : $li.attr('data-folder') + '/';
 					
-					Extension.action[$li.hasClass('selected') ? 'stage' : 'unstage'](workspaceId, path, function() {
-							Extension.status.update(workspaceId, $li);
+					Extension.action[$li.hasClass('selected') ? 'stage' : 'unstage'](workspaceId, path).done(function() {
+						Extension.action.status(workspaceId, path).done(function(files) {
+							Extension.status.update(workspaceId, $li, files);
+						});
 					});
 				}).end().find('.git-folder > .inner .name').click(function() {
 					$(this).parents('.git-folder').eq(0).children('ul').stop().slideToggle(300);
@@ -516,7 +554,7 @@ define(function(require, exports, module) {
 					
 					
 					if ($(this).hasClass('checked')) {
-						Extension.action.getLastCommitMessage(workspaceId, function(message) {
+						Extension.action.getLastCommitMessage(workspaceId).done(function(message) {
 							if (!$content.find('.input-message').val().trim()) {
 								$content.find('.input-message').val(message.trim());
 							}
@@ -539,24 +577,25 @@ define(function(require, exports, module) {
 						return false;
 					}
 					
-					Extension.action.commit(workspaceId, message, $amend.hasClass('checked'), function(out, err) {
-						if (err) {
-							return Extension.onResult(out, err);
-						}
-						
+					Extension.action.commit(workspaceId, message, $amend.hasClass('checked')).done(function(out) {
 						Notification.open({
 							type: 'success',
 							title: 'Git',
-							description: 'Updates were successfully commited',
+							description: 'Updates were successfully commited.',
 							autoClose: true
 						});
 						
+						Extension.action.status(workspaceId);
+						
 						if (openPush) {
-							Extension.action.getRemotes(workspaceId, function() {
+							Extension.action.getRemotes(workspaceId).done(function() {
 								Extension.remotes.popup(workspaceId);
 							});
 						}
+					}).fail(function(err) {
+						return Extension.onResult(null, err);
 					});
+					
 					Popup.close($content);
 					
 					return false;
@@ -564,10 +603,6 @@ define(function(require, exports, module) {
 				
 				$content.find('.actions').append(Popup.createBtn('Commit', 'black', function() {
 					openPush = false;
-					return commit();
-				}));
-				$content.find('.actions').append(Popup.createBtn('Commit and push', 'black', function() {
-					openPush = true;
 					return commit();
 				}));
 				$content.find('.actions').append(Popup.createBtn('Cancel', 'black'));
@@ -581,7 +616,7 @@ define(function(require, exports, module) {
 				
 				$content.find('.input-message').focus();
 			},
-			update: function(workspaceId, $li) {
+			update: function(workspaceId, $li, files) {
 				var data = Extension._data[workspaceId];
 				if (!data) {
 					return;
@@ -591,15 +626,37 @@ define(function(require, exports, module) {
 				var mustBeEqual = $li.hasClass('git-file');
 				var $parent = $li.parent();
 				
-				data.files.forEach(function(file) {
-					if ((mustBeEqual && file.file != path) || (!mustBeEqual && file.file.substr(0, path.length) != path)) {
-						return;
+				if (!files.length) {
+					$li.remove();
+				}
+				
+				for (var i = 0; i < files.length; i++) {
+					var file = files[i];
+					
+					var $file = $parent.find('li.git-file[data-file="' + file.file + '"]');
+					
+					var allowDiff = file.status.indexOf(FILE_STATUS.UNTRACKED) === -1 &&
+						file.status.indexOf(FILE_STATUS.RENAMED) === -1 &&
+						file.status.indexOf(FILE_STATUS.DELETED) === -1;
+					var allowDelete = file.status.indexOf(FILE_STATUS.UNTRACKED) !== -1 ||
+						file.status.indexOf(FILE_STATUS.STAGED) !== -1 &&
+						file.status.indexOf(FILE_STATUS.ADDED) !== -1;
+					var allowUndo = !allowDelete;
+					
+					var $col = $file.find('.col').eq(2);
+					$col.empty();
+					
+					if (allowDiff) {
+						$col.append('<div class="action action-diff">Diff</div>');
+					}
+					if (allowUndo) {
+						$col.append('<div class="action action-discard">Discard</div>');
 					}
 					
-					$parent.find('li.git-file[data-file="' + file.file + '"] .name .status').text((file.status.map(function(status) {
+					$file.find('.name .status').text((file.status.map(function(status) {
 						return FILE_STATUS_NAMES[status];
 					}).join(', ')));
-				});
+				}
 			}
 		},
 		branches: {
@@ -615,12 +672,18 @@ define(function(require, exports, module) {
 					</div>\
 					<div class="message">\
 						<fieldset>\
-							<dl><dd class="full">\
-								<select name="input-branch" placeholder="Branch name"></select>\
-							</dd></dl>\
-							<dl><dd class="full">\
-								<input type="text" name="input-name" placeholder="Branch name">\
-							</dd></dl>\
+							<dl>\
+								<dt>Origin branch</dt>\
+								<dd>\
+									<select name="input-branch"></select>\
+								</dd>\
+							</dl>\
+							<dl>\
+								<dt>Branch name</dt>\
+								<dd>\
+									<input type="text" name="input-name">\
+								</dd>\
+							</dl>\
 						</fieldset>\
 						<div class="error"></div>\
 					</div>\
@@ -640,14 +703,14 @@ define(function(require, exports, module) {
 					
 					$content.find('.error').html('');
 					
-					Extension.action.createBranch(workspaceId, name, originBranch, function(created, branches, branch) {
-						if (created) {
+					Extension.action.createBranch(workspaceId, name, originBranch).done(function() {
+						Extension.action.getBranches(workspaceId).done(function(branches, branch) {
 							Extension.branches.list(workspaceId, $content, branches, branch);
 							
 							$content.find(':input[name="input-name"]').val('');
-						} else {
-							Extension.onResult(null, branches);
-						}
+						});
+					}).fail(function(err) {
+						Extension.onResult(null, err);
 					});
 					
 					return false;
@@ -662,6 +725,7 @@ define(function(require, exports, module) {
 			list: function(workspaceId, $content, branches, branch) {
 				var $list = $content.find('.extension-git-list > ul');
 				var $select = $content.find(':input[name="input-branch"]');
+				var currentBranch = branch;
 				
 				$list.children().addClass('check').removeClass('selected');
 				branches.forEach(function(branch) {
@@ -670,7 +734,7 @@ define(function(require, exports, module) {
 						return;
 					}
 					
-					$select.append('<option value="' + branch.name + '">' + branch.name + '</option>');
+					$select.append('<option value="' + branch.name + '" ' + (branch.name == currentBranch ? 'selected' : '') +'>' + branch.name + '</option>');
 					
 					if (branch.remote) {
 						return;
@@ -713,13 +777,11 @@ define(function(require, exports, module) {
 						return;
 					}
 					
-					Extension.action.checkout(workspaceId, $item.find('.name').text(), function(out, err) {
-						if (err) {
-							return Extension.onResult(out, err);
-						}
-						
+					Extension.action.checkout(workspaceId, $item.find('.name').text()).done(function(out) {
 						$item.parent().children().removeClass('selected');
 						$item.addClass('selected');
+					}).fail(function(err) {
+						return Extension.onResult(null, err);
 					});
 				}).end().find('.action-delete').click(function() {
 					var $item = $(this).parents('.git-item').eq(0);
@@ -731,12 +793,12 @@ define(function(require, exports, module) {
 						content: 'Are you sure to delete <strong>' + name + '</strong> branch?',
 						name: 'Yes',
 						callback: function() {
-							Extension.action.deleteBranch(workspaceId, name, true, function(deleted, branches, branch) {
-								if (deleted) {
+							Extension.action.deleteBranch(workspaceId, name, true).done(function() {
+								Extension.action.getBranches(workspaceId).done(function(branches, branch) {
 									Extension.branches.list(workspaceId, $content, branches, branch);
-								} else {
-									Extension.onResult(null, branches);
-								}
+								});
+							}).fail(function(err) {
+								Extension.onResult(null, err);
 							});
 						}
 					});
@@ -788,12 +850,16 @@ define(function(require, exports, module) {
 					var $result = Extension.onResult();
 					
 					if (rebase) {
-						Extension.action.rebaseBranch(workspaceId, branch, function(out, err) {
-							$result.find('.extension-git-result').html((out || '') + (err || ''));
+						Extension.action.rebaseBranch(workspaceId, branch).done(function(out) {
+							$result.find('.extension-git-result').html((out || ''));
+						}).fail(function(err) {
+							$result.find('.extension-git-result').html((err || ''));
 						});
 					} else {
-						Extension.action.mergeBranch(workspaceId, branch, message, noFf, function(out, err) {
-							$result.find('.extension-git-result').html((out || '') + (err || ''));
+						Extension.action.mergeBranch(workspaceId, branch, message, noFf).done(function(out) {
+							$result.find('.extension-git-result').html((out || ''));
+						}).fail(function(err) {
+							$result.find('.extension-git-result').html((err || ''));
 						});
 					}
 					
@@ -823,12 +889,18 @@ define(function(require, exports, module) {
 					</div>\
 					<div class="message">\
 						<fieldset>\
-							<dl><dd class="full">\
-								<input type="text" name="input-name" placeholder="Name of the new remote">\
-							</dd></dl>\
-							<dl><dd class="full">\
-								<input type="text" name="input-url" placeholder="URL of the new remote">\
-							</dd></dl>\
+							<dl>\
+								<dt>Name</dt>\
+								<dd>\
+									<input type="text" name="input-name">\
+								</dd>\
+							</dl>\
+							<dl>\
+								<dt>URL</dt>\
+								<dd>\
+									<input type="text" name="input-url">\
+								</dd>\
+							</dl>\
 						</fieldset>\
 						<div class="error"></div>\
 					</div>\
@@ -846,14 +918,14 @@ define(function(require, exports, module) {
 						return false;
 					}
 					
-					Extension.action.createRemote(workspaceId, name, url, function(created, remotes) {
-						if (created) {
+					Extension.action.createRemote(workspaceId, name, url).done(function() {
+						Extension.action.getRemotes(workspaceId).done(function(remotes) {
 							Extension.remotes.list(workspaceId, $content, remotes);
 							$content.find(':input[name="input-name"]').val('');
 							$content.find(':input[name="input-url"]').val('');
-						} else {
-							Extension.onResult(null, remotes);
-						}
+						});
+					}).fail(function(err) {
+						Extension.onResult(null, err);
 					});
 					
 					return false;
@@ -907,12 +979,12 @@ define(function(require, exports, module) {
 						content: 'Are you sure to delete <strong>' + name + '</strong> remote?',
 						name: 'Yes',
 						callback: function() {
-							Extension.action.deleteRemote(workspaceId, name, function(deleted, remotes) {
-								if (deleted) {
+							Extension.action.deleteRemote(workspaceId, name).done(function() {
+								Extension.action.getRemotes(workspaceId).done(function(remotes) {
 									Extension.remotes.list(workspaceId, $content, remotes);
-								} else {
-									Extension.onResult(null, remotes);
-								}
+								});
+							}).fail(function(err) {
+								Extension.onResult(null, err);
 							});
 						}
 					});
@@ -923,13 +995,13 @@ define(function(require, exports, module) {
 				}).end().find('.action-pull').click(function() {
 					var $item = $(this).parents('.git-item').eq(0);
 					
-					Extension.action.getBranches(workspaceId, function() {
+					Extension.action.getBranches(workspaceId).done(function() {
 						Extension.remotes.pull(workspaceId, $item.attr('data-name'), $content);
 					});
 				}).end().find('.action-push').click(function() {
 					var $item = $(this).parents('.git-item').eq(0);
 					
-					Extension.action.getBranches(workspaceId, function() {
+					Extension.action.getBranches(workspaceId).done(function() {
 						Extension.remotes.push(workspaceId, $item.attr('data-name'), $content);
 					});
 				});
@@ -947,12 +1019,10 @@ define(function(require, exports, module) {
 				if (!(/^https?:/.test(remote.url))) {
 					var $result = Extension.onResult();
 					
-					Extension.action.fetchRemote(workspaceId, remoteName, function(out, err) {
-						if (err) {
-							return Extension.resultData($result, out, err);
-						}
-						
+					Extension.action.fetchRemote(workspaceId, remoteName).done(function(out) {
 						Popup.close($result);
+					}).fail(function(err) {
+						return Extension.resultData($result, null, err);
 					});
 					
 					return false;
@@ -978,12 +1048,10 @@ define(function(require, exports, module) {
 					var urlData = Extension.parseUrl(url, username, password, save);
 					var $result = Extension.onResult();
 					
-					Extension.remotes.fetchWithSettings(workspaceId, remote, urlData, $remotesContent, function(out, err) {
-						if (err) {
-							return Extension.resultData($result, out, err);
-						}
-						
+					Extension.remotes.fetchWithSettings(workspaceId, remote, urlData, $remotesContent).done(function(out) {
 						Popup.close($result);
+					}).fail(function(err) {
+						return Extension.resultData($result, null, err);
 					});
 					
 					Popup.close($content);
@@ -1024,7 +1092,7 @@ define(function(require, exports, module) {
 								<dd>\
 									<label for="git-input-default"><input type="radio" name="input-type" id="git-input-default" value="default" checked> Default merge</label>\
 									<label for="git-input-avoid"><input type="radio" name="input-type" id="git-input-avoid" value="avoid"> Avoid manual merging</label>\
-									<label for="git-input-commit"><input type="radio" name="input-type" id="git-input-commit" value="commit"> Default merge</label>\
+									<label for="git-input-commit"><input type="radio" name="input-type" id="git-input-commit" value="commit"> Merge without commit</label>\
 									<label for="git-input-rebase"><input type="radio" name="input-type" id="git-input-rebase" value="rebase"> Use rebase</label>\
 									<label for="git-input-soft"><input type="radio" name="input-type" id="git-input-soft" value="soft"> Use soft reset</label>\
 								</dd>\
@@ -1068,26 +1136,28 @@ define(function(require, exports, module) {
 					
 					var $result = Extension.onResult();
 					
-					var onMerge = function(out, err) {
-						Extension.resultData($result, out, err);
+					var onDone = function(out) {
+						Extension.resultData($result, out, null);
 						
 						if (tracking) {
 							Extension.action.checkout(workspaceId, branch);
 						}
 					};
 					
-					Extension.remotes.fetchWithSettings(workspaceId, remote, urlData, $remotesContent, function(out, err) {
-						if (err) {
-							return Extension.resultData($result, out, err);
-						}
-						
+					var onFail = function(err) {
+						Extension.resultData($result, null, err);
+					};
+					
+					Extension.remotes.fetchWithSettings(workspaceId, remote, urlData, $remotesContent).done(function(out) {
 						if (['default', 'avoid', 'commit'].indexOf(type) !== -1) {
-							Extension.action.mergeRemote(workspaceId, remoteName, branch, type == 'avoid', type == 'commit', onMerge);
+							Extension.action.mergeRemote(workspaceId, remoteName, branch, type == 'avoid', type == 'commit').done(onDone).fail(onFail);
 						} else if (type == 'rebase') {
-							Extension.action.rebaseRemote(workspaceId, remoteName, branch, onMerge);
+							Extension.action.rebaseRemote(workspaceId, remoteName, branch).done(onDone).fail(onFail);
 						} else if (type == 'soft') {
-							Extension.action.resetRemote(workspaceId, remoteName, branch, onMerge);
+							Extension.action.resetRemote(workspaceId, remoteName, branch).done(onDone).fail(onFail);
 						}
+					}).fail(function(err) {
+						return Extension.resultData($result, null, err);
 					});
 					
 					Popup.close($content);
@@ -1175,8 +1245,10 @@ define(function(require, exports, module) {
 					
 					var $result = Extension.onResult();
 					
-					Extension.remotes.pushWithSettings(workspaceId, remote, branch, type == 'forced', type == 'delete', urlData, $remotesContent, function(out, err) {
-						Extension.resultData($result, out, err);
+					Extension.remotes.pushWithSettings(workspaceId, remote, branch, type == 'forced', type == 'delete', urlData, $remotesContent).done(function(out) {
+						Extension.resultData($result, out, null);
+					}).fail(function(err) {
+						Extension.resultData($result, null, err);
 					});
 					
 					Popup.close($content);
@@ -1215,67 +1287,75 @@ define(function(require, exports, module) {
 					}
 				}
 			},
-			fetchWithSettings: function(workspaceId, remote, urlData, $remotesContent, cb) {
-				var onRemoteUpdated = function(out, err) {
-					if (err) {
-						return cb(out, err);
-					}
-					
-					Extension.action.fetchRemote(workspaceId, remote.name, function(out, err) {
+			fetchWithSettings: function(workspaceId, remote, urlData, $remotesContent) {
+				var d = $.Deferred();
+				
+				var onRemoteUpdated = function(out) {
+					Extension.action.fetchRemote(workspaceId, remote.name).done(function(out) {
 						if (urlData.url != urlData.saveUrl) {
-							Extension.action.setRemoteUrl(workspaceId, 'origin', urlData.saveUrl, function() {
-								Extension.action.getRemotes(workspaceId, function(remotes) {
+							Extension.action.setRemoteUrl(workspaceId, 'origin', urlData.saveUrl).done(function() {
+								Extension.action.getRemotes(workspaceId).done(function(remotes) {
 									Extension.remotes.list(workspaceId, $remotesContent, remotes);
 								});
 							});
 						} else if (urlData.url != remote.url) {
-							Extension.action.getRemotes(workspaceId, function(remotes) {
+							Extension.action.getRemotes(workspaceId).done(function(remotes) {
 								Extension.remotes.list(workspaceId, $remotesContent, remotes);
 							});
 						}
 						
-						if (err) {
-							return cb(out, err);
-						}
-						
-						cb(out, err);
+						d.resolve(out);
+					}).fail(function(err) {
+						d.reject(err);
 					});
 				};
 				
 				if (remote.url != urlData.url) {
-					Extension.action.setRemoteUrl(workspaceId, remote.name, urlData.url, onRemoteUpdated);
+					Extension.action.setRemoteUrl(workspaceId, remote.name, urlData.url).done(function(out) {
+						onRemoteUpdated(out)
+					}).fail(function(err) {
+						d.reject(err);
+					});
 				} else {
-					onRemoteUpdated(null, null);
+					onRemoteUpdated(null);
 				}
+				
+				return d.promise();
 			},
-			pushWithSettings: function(workspaceId, remote, branch, forced, remove, urlData, $remotesContent, cb) {
-				var onRemoteUpdated = function(out, err) {
-					if (err) {
-						return cb(out, err);
-					}
-					
-					Extension.action.pushRemote(workspaceId, remote.name, branch, forced, remove, function(out, err) {
+			pushWithSettings: function(workspaceId, remote, branch, forced, remove, urlData, $remotesContent) {
+				var d = $.Deferred();
+				
+				var onRemoteUpdated = function(out) {
+					Extension.action.pushRemote(workspaceId, remote.name, branch, forced, remove).done(function(out) {
 						if (urlData.url != urlData.saveUrl) {
-							Extension.action.setRemoteUrl(workspaceId, 'origin', urlData.saveUrl, function() {
-								Extension.action.getRemotes(workspaceId, function(remotes) {
+							Extension.action.setRemoteUrl(workspaceId, 'origin', urlData.saveUrl).done(function() {
+								Extension.action.getRemotes(workspaceId).done(function(remotes) {
 									Extension.remotes.list(workspaceId, $remotesContent, remotes);
 								});
 							});
 						} else if (urlData.url != remote.url) {
-							Extension.action.getRemotes(workspaceId, function(remotes) {
+							Extension.action.getRemotes(workspaceId).done(function(remotes) {
 								Extension.remotes.list(workspaceId, $remotesContent, remotes);
 							});
 						}
 						
-						cb(out, err);
+						d.resolve(out);
+					}).fail(function(err) {
+						d.reject(err);
 					});
 				};
 				
 				if (remote.url != urlData.url) {
-					Extension.action.setRemoteUrl(workspaceId, remote.name, urlData.url, onRemoteUpdated);
+					Extension.action.setRemoteUrl(workspaceId, remote.name, urlData.url).done(function(out) {
+						onRemoteUpdated(out);
+					}).fail(function(err) {
+						d.reject(err);
+					});
 				} else {
-					onRemoteUpdated(null, null);
+					onRemoteUpdated(null);
 				}
+				
+				return d.promise();
 			}
 		},
 		history: {
@@ -1370,12 +1450,10 @@ define(function(require, exports, module) {
 					if (top + $(this).height() >= this.scrollHeight - 10) {
 						$(this).attr('data-loading', true);
 						
-						Extension.action.getHistory(workspaceId, data.branch, $content.find('.extension-git-list > ul > li').length, file, function(out, err) {
-							if (!err) {
-								var history = Extension.history.parse(out);
-								Extension.history.list(workspaceId, $content, history);
-								$content.find('.extension-git-list').removeAttr('data-loading');
-							}
+						Extension.action.getHistory(workspaceId, data.branch, $content.find('.extension-git-list > ul > li').length, file).done(function(out) {
+							var history = Extension.history.parse(out);
+							Extension.history.list(workspaceId, $content, history);
+							$content.find('.extension-git-list').removeAttr('data-loading');
 						});
 					}
 				});
@@ -1480,23 +1558,24 @@ define(function(require, exports, module) {
 					
 					var $result = Extension.onResult();
 					
-					Extension.action.clone(workspaceId, remote.url, function(out, err) {
-						if (err) {
-							return Extension.resultData($result, out, err);
-						}
-						
+					Extension.action.clone(workspaceId, remote.url).done(function(out) {
 						Popup.close($result);
 						Explorer.action.list({id: workspaceId, path: '/'});
+						
 						Notification.open({
 							type: 'success',
 							title: 'Git',
-							description: 'Repository was successfully cloned',
+							description: 'Repository was successfully cloned.',
 							autoClose: true
 						});
+						
+						Extension.action.status(workspaceId);
 						
 						if (remote.url != remote.saveUrl) {
 							Extension.action.setRemoteUrl(workspaceId, 'origin', remote.saveUrl);
 						}
+					}).fail(function(err) {
+						return Extension.resultData($result, null, err);
 					});
 					
 					Popup.close($content);
@@ -1556,8 +1635,16 @@ define(function(require, exports, module) {
 				fn.apply(Extension, args);
 			}
 		},
+		getAuthor: function() {
+			var name = this.getStorage().name;
+			var email = this.getStorage().email;
+			
+			return name && email ? name + ' <' + email + '>' : null;
+		},
 		action: {
-			_run: function(workspaceId, commands, cb) {
+			_run: function(workspaceId, commands) {
+				var d = $.Deferred();
+				
 				commands = Array.isArray(commands) ? commands : [commands];
 				
 				Socket.send('workspace.action', {
@@ -1568,91 +1655,116 @@ define(function(require, exports, module) {
 						return 'git ' + command;
 					}).join('; ')
 				}, null, function(data) {
-					cb(data.stdout, data.stderr);
+					if (data.stderr) {
+						d.reject(data.stderr);
+					} else {
+						d.resolve(data.stdout);
+					}
 				});
+				
+				return d.promise();
 			},
-			status: function(workspaceId, cb) {
-				this._run(workspaceId, 'status -u -b --porcelain', function(out, err) {
-					if (err) {
-						Extension.update(workspaceId, null);
-						Extension.callback(cb);
-						return false;
+			status: function(workspaceId, path) {
+				var d = $.Deferred();
+				var i;
+				
+				this._run(workspaceId, 'status -u -b --porcelain' + (path ? ' "' + path + '"' : '')).done(function(out) {
+					var parsed = Extension.status.parse(out);
+					
+					var origFiles = parsed.files;
+					
+					if (path) {
+						var files = Extension._data[workspaceId].files || [];
+						
+						for (i = files.length-1; i >= 0; i--) {
+							var file = files[i].file;
+							
+							if (file == path || file.substr(0, path.length + 1) == path + '/') {
+								files.splice(i, 1);
+							}
+						}
+						
+						files.push.apply(files, origFiles);
+						parsed.files = files;
 					}
 					
-					var parsed = Extension.status.parse(out);
+					parsed.files.sort(function(a, b) {
+						if (a.file < b.file) {
+							return -1;
+						}
+						if (a.file > b.file) {
+							return 1;
+						}
+						return 0;
+					});
+					
 					if (parsed.needReset.length) {
-						Extension.action.unstage(workspaceId, parsed.needReset, cb);
+						Extension.action.unstage(workspaceId, parsed.needReset).always(function() {
+							Extension.status(workspaceId, path).done(function(data) {
+								d.resolve(data);
+							}).fail(function() {
+								d.reject();
+							});
+						});
 					} else {
 						delete parsed.needReset;
-						Extension.update(workspaceId, parsed);
-						Extension.callback(cb);
+						Extension.update(workspaceId, path ? {files: parsed.files} : parsed);
+						d.resolve(path ? origFiles : parsed);
 					}
+				}).fail(function(err) {
+					Extension.update(workspaceId, null);
+					d.reject(err);
 				});
+				
+				return d.promise();
 			},
-			init: function(workspaceId, cb) {
-				this._run(workspaceId, 'init', function(out, err) {
-					if (err) {
-						return Extension.callback(cb, out, err);
-					}
-					
-					Extension.action.status(workspaceId, function() {
-						Extension.callback(cb, out, err);
-					});
-				});
+			init: function(workspaceId) {
+				return this._run(workspaceId, 'init');
 			},
-			clone: function(workspaceId, url, cb) {
-				this._run(workspaceId, 'clone ' + url + ' .', function(out, err) {
-					if (err) {
-						return Extension.callback(cb, out, err);
-					}
-					
-					Extension.action.status(workspaceId, function() {
-						Extension.callback(cb, out, err);
-					});
-				});
+			clone: function(workspaceId, url) {
+				return this._run(workspaceId, 'clone ' + url + ' .');
 			},
-			stage: function(workspaceId, path, cb) {
-				this._run(workspaceId, 'add -A "' + path + '"', function(out) {
-					Extension.action.status(workspaceId, function() {
-						Extension.callback(cb);
-					});
-				});
+			stage: function(workspaceId, path) {
+				path = Array.isArray(path) ? path : [path];
+				
+				path = path.map(function(item) {
+					return '"' + Fn.quotes(item) + '"';
+				}).join(' ');
+				
+				return this._run(workspaceId, 'add -A ' + path);
 			},
-			unstage: function(workspaceId, path, cb) {
-				this._run(workspaceId, Array.isArray(path) ? path.map(function(path) { return 'reset -- "' + path + '"'; }) : 'reset -- "' + path + '"', function(out) {
-					Extension.action.status(workspaceId, function() {
-						Extension.callback(cb);
-					});
-				});
+			unstage: function(workspaceId, path) {
+				path = Array.isArray(path) ? path : [path];
+				
+				path = path.map(function(item) {
+					return '"' + Fn.quotes(item) + '"';
+				}).join(' ');
+				
+				return this._run(workspaceId, 'reset -- ' + path);
 			},
 			commit: function(workspaceId, message, amend, cb) {
-				var author = Extension.getStorage().author;
+				var author = Extension.getAuthor();
 				
-				this._run(workspaceId, 'commit -m "' + message.replace(/\"/, '\\\"') + '" ' + (amend ? '--amend' : '') + ' ' + (author ? '--author="' + author.replace(/\"/, '\\\"') + '"' : ''), function(out, err) {
-					if (err) {
-						return Extension.callback(cb, out, err);
-					}
-					
-					Extension.action.status(workspaceId, function() {
-						Extension.callback(cb, out, err);
-					});
-				});
+				return this._run(workspaceId, 'commit -m "' + message.replace(/\"/, '\\\"') + '" ' + (amend ? '--amend' : '') + ' ' + (author ? '--author="' + author.replace(/\"/, '\\\"') + '"' : ''));
 			},
 			getLastCommitMessage: function(workspaceId, cb) {
-				this._run(workspaceId, 'log -1 --pretty=%B', function(out) {
-					Extension.callback(cb, out || '');
-				});
+				return this._run(workspaceId, 'log -1 --pretty=%B');
 			},
-			checkout: function(workspaceId, hash, cb) {
-				this._run(workspaceId, 'checkout ' + hash, function(out, err) {
-					Extension.action.status(workspaceId);
-					Extension.callback(cb, out, err);
-				});
+			checkout: function(workspaceId, path, cb) {
+				path = Array.isArray(path) ? path : [path];
+				
+				path = path.map(function(item) {
+					return '"' + Fn.quotes(item) + '"';
+				}).join(' ');
+				
+				return this._run(workspaceId, 'checkout ' + path);
 			},
 			getBranches: function(workspaceId, cb) {
-				this._run(workspaceId, 'branch -a --no-color', function(out) {
+				var d = $.Deferred();
+				
+				this._run(workspaceId, 'branch -a --no-color').done(function(out) {
 					var current = null;
-					var branches = out.split("\n").reduce(function(arr, line) {
+					var branches = (out || '').split("\n").reduce(function(arr, line) {
 						var name = line.trim(),
 							remote = null;
 
@@ -1691,55 +1803,34 @@ define(function(require, exports, module) {
 						branch: current
 					});
 					
-					Extension.callback(cb, branches, current);
+					d.resolve(branches, current);
+				}).fail(function(err) {
+					Extension.update(workspaceId, {
+						branches: [],
+						branch: null
+					});
+					
+					d.reject(err);
 				});
+				
+				return d.promise();
 			},
 			createBranch: function(workspaceId, branch, origin, cb) {
-				this._run(workspaceId, 'checkout -b ' + branch + ' ' + (origin ? origin : ''), function(out, err) {
-					if (err) {
-						return Extension.callback(cb, false, err);
-					}
-					
-					Extension.action.getBranches(workspaceId, function(branches, branch) {
-						Extension.callback(cb, true, branches, branch);
-					});
-				});
+				return this._run(workspaceId, 'checkout -b ' + branch + ' ' + (origin ? origin : ''));
 			},
 			deleteBranch: function(workspaceId, branch, force, cb) {
-				this._run(workspaceId, 'branch --no-color -' + (force ? 'D' : 'd') + ' ' + branch, function(out, err) {
-					if (err) {
-						return Extension.callback(cb, false, err);
-					}
-					
-					Extension.action.getBranches(workspaceId, function(branches, branch) {
-						Extension.callback(cb, true, branches, branch);
-					});
-				});
+				return this._run(workspaceId, 'branch --no-color -' + (force ? 'D' : 'd') + ' ' + branch);
 			},
 			mergeBranch: function(workspaceId, branch, message, noFf, cb) {
-				this._run(workspaceId, 'merge ' + (noFf ? '--no-ff' : '') + ' ' + (message ? '-m "' +  message + '"' : '') + ' ' + branch, function(out, err) {
-					if (err) {
-						return Extension.callback(cb, out, err);
-					}
-					
-					Extension.action.status(workspaceId, function() {
-						Extension.callback(cb, out, err);
-					});
-				});
+				return this._run(workspaceId, 'merge ' + (noFf ? '--no-ff' : '') + ' ' + (message ? '-m "' +  message + '"' : '') + ' ' + branch);
 			},
 			rebaseBranch: function(workspaceId, branch, cb) {
-				this._run(workspaceId, 'rebase --ignore-date  ' + branch, function(out, err) {
-					if (err) {
-						return Extension.callback(cb, out, err);
-					}
-					
-					Extension.action.status(workspaceId, function() {
-						Extension.callback(cb, out, err);
-					});
-				});
+				return this._run(workspaceId, 'rebase --ignore-date  ' + branch);
 			},
 			getRemotes: function(workspaceId, cb) {
-				this._run(workspaceId, 'remote -v', function(out, err) {
+				var d = $.Deferred();
+				
+				this._run(workspaceId, 'remote -v').done(function(out) {
 					var remoteNames = [];
 					var remotes =  !out ? [] : out.replace(/\((push|fetch)\)/g, "").split("\n").reduce(function(arr, line) {
 						var s = line.trim().split("\t");
@@ -1771,64 +1862,40 @@ define(function(require, exports, module) {
 						remotes: remotes
 					});
 					
-					Extension.callback(cb, remotes);
+					d.resolve(remotes);
+				}).fail(function(err) {
+					Extension.update(workspaceId, {
+						remotes: []
+					});
+					
+					d.reject(err);
 				});
+				
+				return d.promise();
 			},
 			createRemote: function(workspaceId, name, url, cb) {
-				this._run(workspaceId, 'remote add ' + name + ' ' + url, function(out, err) {
-					if (err) {
-						return Extension.callback(cb, false, err);
-					}
-					
-					Extension.action.getRemotes(workspaceId, function(remotes) {
-						Extension.callback(cb, true, remotes);
-					});
-				});
+				return this._run(workspaceId, 'remote add ' + name + ' ' + url);
 			},
 			deleteRemote: function(workspaceId, name, cb) {
-				this._run(workspaceId, 'remote rm ' + name, function(out, err) {
-					if (err) {
-						return Extension.callback(cb, false, err);
-					}
-					
-					Extension.action.getRemotes(workspaceId, function(remotes) {
-						Extension.callback(cb, true, remotes);
-					});
-				});
+				return this._run(workspaceId, 'remote rm ' + name);
 			},
 			fetchRemote: function(workspaceId, name, cb) {
-				this._run(workspaceId, 'fetch ' + name, function(out, err) {
-					if (err) {
-						return Extension.callback(cb, out, err);
-					}
-					
-					Extension.callback(cb, out, err);
-				});
+				return this._run(workspaceId, 'fetch ' + name);
 			},
 			mergeRemote: function(workspaceId, remote, branch, ffOnly, noCommit, cb) {
-				this._run(workspaceId, 'merge ' + (ffOnly ? '--ff-only' : '') + ' ' + (noCommit ? '--no-commit --no-ff' : '') + ' ' + remote + '/' + branch, function(out, err) {
-					Extension.callback(cb, out, err);
-				});
+				return this._run(workspaceId, 'merge ' + (ffOnly ? '--ff-only' : '') + ' ' + (noCommit ? '--no-commit --no-ff' : '') + ' ' + remote + '/' + branch);
 			},
 			rebaseRemote: function(workspaceId, remote, branch, cb) {
-				this._run(workspaceId, 'rebase ' + remote + '/' + branch, function(out, err) {
-					Extension.callback(cb, out, err);
-				});
+				return this._run(workspaceId, 'rebase ' + remote + '/' + branch);
 			},
 			resetRemote: function(workspaceId, remote, branch, cb) {
-				this._run(workspaceId, 'reset --soft ' + remote + '/' + branch, function(out, err) {
-					Extension.callback(cb, out, err);
-				});
+				return this._run(workspaceId, 'reset --soft ' + remote + '/' + branch);
 			},
 			setRemoteUrl: function(workspaceId, remote, url, cb) {
-				this._run(workspaceId, 'remote set-url ' + remote + ' ' + url, function(out, err) {
-					Extension.callback(cb, out, err);
-				});
+				return this._run(workspaceId, 'remote set-url ' + remote + ' ' + url);
 			},
 			pushRemote: function(workspaceId, remote, branch, forced, remove, cb) {
-				this._run(workspaceId, 'push ' + remote + ' ' + branch + ' ' + (forced ? '--force' : '') + ' ' + (remove ? '--delete' : '') + ' --porcelain', function(out, err) {
-					Extension.callback(cb, out, err);
-				});
+				return this._run(workspaceId, 'push ' + remote + ' ' + branch + ' ' + (forced ? '--force' : '') + ' ' + (remove ? '--delete' : '') + ' --porcelain');
 			},
 			getHistory: function(workspaceId, branch, skipCount, file, cb) {
 				var separator = "_._",
@@ -1843,10 +1910,23 @@ define(function(require, exports, module) {
 						"%b", // body
 						"%d" // tags
 					].join(separator) + newline;
-
-				this._run(workspaceId, 'log -100 ' + (skipCount ? '--skip=' + skipCount : '' ) + ' --format=' + format + ' ' + branch + ' -- ' + (file ? file : ''), function(out, err) {
-					Extension.callback(cb, out, err);
-				});
+					
+				return this._run(workspaceId, 'log -100 ' + (skipCount ? '--skip=' + skipCount : '' ) + ' --format=' + format + ' ' + branch + ' -- ' + (file ? file : ''));
+			},
+			diffFile: function(workspaceId, path) {
+				var files = Extension._data[workspaceId].files;
+				
+				var isStaged = false;
+				
+				for (var i = 0; i < files.length; i++) {
+					if (files[i].file == path) {
+						isStaged = files[i].status.indexOf(FILE_STATUS.STAGED) !== -1;
+						break;
+					}
+				}
+				
+				
+				return this._run(workspaceId, 'diff --no-ext-diff --no-color' + (isStaged ? ' --staged' : '') + ' -- "' + path + '"');
 			}
 		}
 	});

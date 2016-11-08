@@ -232,6 +232,94 @@
 		}
 	}
 	
+	.extension-git-diff {
+		max-height: 400px;
+		overflow: auto;
+		
+		code,
+		pre {
+			border: none;
+			padding: 0 3px;
+			margin: 0;
+		}
+		
+		table {
+			width: 100%;
+			cursor: text;
+			border-spacing: 0;
+			
+			tbody {
+				tr {
+					td {
+						border-width: 0px;
+						padding: 2px 8px;
+						
+						&.row-num {
+							width: 1px;
+							border-right: 1px solid;
+							border-color: #E5E5E5;
+							text-align: right;
+							user-select: none;
+						}
+						
+						pre {
+							white-space: nowrap;
+							
+							.trailingWhitespace {
+								background-color: #fedbdb;
+							}
+						}
+					}
+					
+					&.added {
+						&,
+						& pre {
+							background-color: #dcfedc;
+						}
+						pre:before {
+							content: "+";
+						}
+						
+						.row-num {
+							background-color: #dcfedc;
+						}
+					}
+					
+					&.removed {
+						&,
+						& pre {
+							background-color: #fedbdb;
+						}
+						pre:before {
+							content: "-";
+						}
+						
+						.row-num {
+							background-color: #fedbdb;
+						}
+					}
+					
+					&.unchanged {
+						pre:before {
+							content: "\0A0"; // &nbsp;
+						}
+					}
+					
+					&.position {
+						td {
+							padding: 8px;
+						}
+						
+						&,
+						& pre {
+							// background-color: ;
+						}
+					}
+				}
+			}
+		}
+	}
+	
 	.extension-git-result {
 		height: 250px;
 		overflow: auto;
