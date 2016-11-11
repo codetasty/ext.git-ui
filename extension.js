@@ -84,22 +84,37 @@ define(function(require, exports, module) {
 				}]
 			});
 			
-			Editor.addToMenu('tools', {
+			Editor.addToMenu('tools', this.name, {
 				label: 'Git',
 				isAvailable: function() {
 					var id = Workspace.getStorage().active;
 					
-					return id && Workspace.isSsh(id);
+					return id && Workspace.hasTerminal(id);
 				},
-				observes: ['workspace', 'editor-git'],
+				observes: ['workspace', this.name],
 				children: this.getMenuChildren.bind(this)
 			});
 			
-			Workspace.on('connect', function(e) {
-				self.onWorkspaceConnected(e.id);
-			}).on('disconnect', function(e) {
-				self.onWorkspaceDisconnected(e.id);
-			});
+			Workspace.on('connect', this.onWorkspaceConnected)
+			.on('disconnect', this.onWorkspaceDisconnected);
+			
+			for (var i in Workspace.connections) {
+				if (Workspace.connections[i].connected) {
+					this.onWorkspaceConnected({id: i});
+				}
+			}
+		},
+		destroy: function() {
+			HomeSettings.remove(this.name);
+			
+			Editor.removeFromMenu('tools', this.name);
+			
+			App.trigger('observe', {name: Extension.name});
+			
+			Workspace.off('connect', this.onWorkspaceConnected)
+			.off('disconnect', this.onWorkspaceDisconnected);
+			
+			this._data = {};
 		},
 		getMenuChildren: function() {
 			var workspaceId = Workspace.getStorage().active;
@@ -208,11 +223,12 @@ define(function(require, exports, module) {
 			
 			return items;
 		},
-		onWorkspaceConnected: function(workspaceId) {
+		onWorkspaceConnected: function(e) {
+			var workspaceId = e.id;
 			var directory = Workspace.getStorage().sessions[workspaceId].settings.gitDirectory;
 			directory = directory ? directory : '/';
 			
-			this._data[workspaceId] = {
+			Extension._data[workspaceId] = {
 				initialised: false,
 				branch: null,
 				branches: [],
@@ -221,14 +237,15 @@ define(function(require, exports, module) {
 				directory: directory
 			};
 			
-			this.action.status(workspaceId).always(function() {
+			Extension.action.status(workspaceId).always(function() {
 				if (Workspace.getStorage().active == workspaceId) {
-					App.trigger('observe', {name: 'editor-git'});
+					App.trigger('observe', {name: Extension.name});
 				}
 			});
 		},
-		onWorkspaceDisconnected: function(workspaceId) {
-			delete this._data[workspaceId];
+		onWorkspaceDisconnected: function(e) {
+			var workspaceId = e.id;
+			delete Extension._data[workspaceId];
 		},
 		update: function(workspaceId, obj) {
 			if (!this._data[workspaceId]) {
@@ -472,7 +489,7 @@ define(function(require, exports, module) {
 					$list.append($file);
 				});
 				
-				$content.find('.extension-git-list ul').on('click', '.action-diff', function() {
+				$content.find('.extension-git-list > ul').on('click', '.action-diff', function() {
 					var $file = $(this).parents('.git-file').eq(0);
 					
 					Extension.action.diffFile(workspaceId, $file.attr('data-file')).done(function(out) {
@@ -708,6 +725,8 @@ define(function(require, exports, module) {
 							Extension.branches.list(workspaceId, $content, branches, branch);
 							
 							$content.find(':input[name="input-name"]').val('');
+							
+							Extension.action.status(workspaceId);
 						});
 					}).fail(function(err) {
 						Extension.onResult(null, err);
@@ -780,6 +799,8 @@ define(function(require, exports, module) {
 					Extension.action.checkout(workspaceId, $item.find('.name').text()).done(function(out) {
 						$item.parent().children().removeClass('selected');
 						$item.addClass('selected');
+						
+						Extension.action.status(workspaceId);
 					}).fail(function(err) {
 						return Extension.onResult(null, err);
 					});
@@ -852,12 +873,14 @@ define(function(require, exports, module) {
 					if (rebase) {
 						Extension.action.rebaseBranch(workspaceId, branch).done(function(out) {
 							$result.find('.extension-git-result').html((out || ''));
+							Extension.action.status(workspaceId);
 						}).fail(function(err) {
 							$result.find('.extension-git-result').html((err || ''));
 						});
 					} else {
 						Extension.action.mergeBranch(workspaceId, branch, message, noFf).done(function(out) {
 							$result.find('.extension-git-result').html((out || ''));
+							Extension.action.status(workspaceId);
 						}).fail(function(err) {
 							$result.find('.extension-git-result').html((err || ''));
 						});
@@ -1700,7 +1723,7 @@ define(function(require, exports, module) {
 					
 					if (parsed.needReset.length) {
 						Extension.action.unstage(workspaceId, parsed.needReset).always(function() {
-							Extension.status(workspaceId, path).done(function(data) {
+							Extension.action.status(workspaceId, path).done(function(data) {
 								d.resolve(data);
 							}).fail(function() {
 								d.reject();

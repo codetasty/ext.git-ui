@@ -11,6 +11,11 @@ define(function(require, exports, module) {
 		EOF: 4
 	};
 	
+	var FILE_STATUS = {
+		NEW_FILE: 0,
+		CHANGED: 1
+	};
+	
 	var Extension;
 
 	var Utils = {
@@ -36,7 +41,11 @@ define(function(require, exports, module) {
 				return "<div>Diff is too long</div>";
 			}
 
-			diffSplit.forEach(function(line) {
+			diffSplit.forEach(function(line, i) {
+				if (line === "") {
+					return;
+				}
+				
 				if (line === " ") {
 					line = "";
 				}
@@ -49,6 +58,7 @@ define(function(require, exports, module) {
 
 					diffData.push({
 						name: line.split("b/")[1],
+						type: FILE_STATUS.CHANGED,
 						lines: []
 					});
 
@@ -107,10 +117,22 @@ define(function(require, exports, module) {
 				} else if (line === "\\ No newline at end of file") {
 					lastStatus = LINE_STATUS.EOF;
 					lineClass = "end-of-file";
+					
+					if (!verbose) {
+						pushLine = false;
+					}
+				} else if (line.indexOf("new file mode") === 0) {
+					if (diffData.length) {
+						diffData[diffData.length-1].type = FILE_STATUS.NEW_FILE;
+					}
+					
+					if (!verbose) {
+						pushLine = false;
+					}
 				} else {
 					// console.log("Unexpected line in diff: " + line);
 				}
-
+				
 				if (pushLine) {
 					var _numLineOld = null,
 						_numLineNew = null;
@@ -167,7 +189,7 @@ define(function(require, exports, module) {
 			for (var i = 0; i < diffData.length; i++) {
 				var file = diffData[i];
 				
-				// html.push('<tr class="meta-file"><th colspan="3">' + file.name + '</th></tr>');
+				html.push('<tr class="meta-file"><th colspan="3">' + file.name + ' <div class="file-tag file-' + (file.type == FILE_STATUS.NEW_FILE ? 'new' : 'changed') + '">' + (file.type == FILE_STATUS.NEW_FILE ? 'New file' : 'Changed') + '</div></th></tr>');
 				
 				for (var j = 0; j < file.lines.length; j++) {
 					html.push('<tr class="diff-row ' + file.lines[j].lineClass + '">\
@@ -176,7 +198,7 @@ define(function(require, exports, module) {
 						<td><pre>' + file.lines[j].line + '</pre></td>\
 					</tr>');
 				}
-				// html.push('<tr class="separator"></tr>');
+				html.push('<tr class="separator"></tr>');
 			}
 			
 			return html.join('');
