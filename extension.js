@@ -15,8 +15,6 @@ define(function(require, exports, module) {
 	var Explorer = require('modules/explorer/explorer');
 	var EditorSession = require('modules/editor/ext/session');
 	
-	var MenuIcon = require('text!./menu.svg');
-	
 	var GitUtils = require('./utils');
 	
 	var FILE_STATUS = {
@@ -47,7 +45,7 @@ define(function(require, exports, module) {
 	
 	var Extension = ExtensionManager.register({
 		name: 'git',
-		storage: {
+		settings: {
 			name: '',
 			email: '',
 			useVerboseDiff: false,
@@ -55,7 +53,9 @@ define(function(require, exports, module) {
 		css: [
 			'extension'
 		]
-	}, {
+	});
+	
+	Extension.extend({
 		_data: {},
 		init: function() {
 			var self = this;
@@ -64,7 +64,7 @@ define(function(require, exports, module) {
 			
 			HomeSettings.add(this.name, {
 				label: 'Git',
-				icon: MenuIcon,
+				icon: require('text!./menu.svg'),
 				sections: [{
 					title: 'Git',
 					module: this.path,
@@ -87,29 +87,27 @@ define(function(require, exports, module) {
 			Editor.addToMenu('tools', this.name, {
 				label: 'Git',
 				isAvailable: function() {
-					var id = Workspace.getStorage().active;
+					var workspace = Workspace.getActive();
 					
-					return id && Workspace.hasTerminal(id);
+					return workspace && workspace.isTerminal;
 				},
 				observes: ['workspace', this.name],
 				children: this.getMenuChildren.bind(this)
 			});
 			
+			Workspace.callByStatus(Workspace.status.CONNECTED, function() {
+				self.onWorkspaceConnected(this);
+			});
+			
 			Workspace.on('connect', this.onWorkspaceConnected)
 			.on('disconnect', this.onWorkspaceDisconnected);
-			
-			for (var i in Workspace.connections) {
-				if (Workspace.connections[i].connected) {
-					this.onWorkspaceConnected({id: i});
-				}
-			}
 		},
 		destroy: function() {
 			HomeSettings.remove(this.name);
 			
 			Editor.removeFromMenu('tools', this.name);
 			
-			App.trigger('observe', {name: Extension.name});
+			App.trigger('observe', {name: this.name});
 			
 			Workspace.off('connect', this.onWorkspaceConnected)
 			.off('disconnect', this.onWorkspaceDisconnected);
@@ -117,7 +115,7 @@ define(function(require, exports, module) {
 			this._data = {};
 		},
 		getMenuChildren: function() {
-			var workspaceId = Workspace.getStorage().active;
+			var workspaceId = Workspace.getActive(true);
 			var data = this._data[workspaceId];
 			var items = [];
 			
@@ -172,14 +170,12 @@ define(function(require, exports, module) {
 				}, {
 					label: 'History for active file',
 					isAvailable: function() {
-						var file = EditorSession.getActive('file');
-						
-						var session = EditorSession.getStorage().sessions[file];
+						var session = EditorSession.getActive('file');
 						
 						var directory = Extension._data[workspaceId].directory || '';
 						directory = directory == '/' ? '' : directory;
 						
-						return file && session.workspaceId == workspaceId && session.path.substr(0, directory.length + 1) == directory + '/';
+						return session && session.storage.workspaceId == workspaceId && session.storage.path.substr(0, directory.length + 1) == directory + '/';
 					},
 					exec: function() {
 						var session = EditorSession.getStorage().sessions[EditorSession.getActive('file')];
