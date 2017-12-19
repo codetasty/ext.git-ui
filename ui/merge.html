@@ -1,0 +1,25 @@
+<form @submit.prevent class="popup-inset">
+	<fieldset>
+		<dl>
+			<dt>Merge message</dt>
+			<dd>
+				<input type="text" v-model="form.data.message" :placeholder="'Merge branch \'' + form.mergeBranch + '\''">
+			</dd>
+		</dl>
+		<dl>
+			<dt></dt>
+			<dd><label for="git-input-rebase"><input type="checkbox" name="input-rebase" id="git-input-rebase" v-model="form.data.rebase"> Use REBASE</label></dd>
+		</dl>
+		<dl>
+			<dt></dt>
+			<dd>
+				<label for="git-input-commit">
+					<input type="checkbox" name="input-noff" id="git-input-commit" v-model="form.data.noff">
+					Create a merge commit even when the merge resolves as a fast-forward
+				</label>
+			</dd>
+		</dl>
+		
+	</fieldset>
+	<div class="error" v-if="form.message">{{form.message}}</div>
+</form>

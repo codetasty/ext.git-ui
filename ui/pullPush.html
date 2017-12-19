@@ -1,0 +1,22 @@
+<form @submit.prevent class="popup-inset">
+	<fieldset>
+		<dl>
+			<dt>Branch</dt>
+			<dd>
+				<select v-model="form.data.branch">
+					<option v-for="branch in form.branches" :value="branch">{{branch}}</option>
+				</select>
+			</dd>
+		</dl>
+		<dl>
+			<dt>Type</dt>
+			<dd>
+				<select v-model="form.data.type">
+					<option v-for="type in form.types" :value="type.value">{{type.label}}</option>
+				</select>
+			</dd>
+		</dl>
+	</fieldset>
+	
+	<div class="error" v-if="form.message">{{form.message}}</div>
+</form>
