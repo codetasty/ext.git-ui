@@ -1,70 +1,1051 @@
+/* global define, $ */
+"use strict";
+
 define(function(require, exports, module) {
-	var ExtensionManager = require('core/extensionManager');
+	// libs
+	const CollectionCluster = require('collection-cluster');
+	const Vue = require('vue');
 	
-	var App = require('core/app');
-	var Socket = require('core/socket');
-	var Workspace = require('core/workspace');
-	var Notification = require('core/notification');
-	var Fn = require('core/fn');
-	var FileManager = require('core/fileManager');
-	var Popup = require('core/popup');
+	// core
+	const ExtensionManager = require('core/extensionManager');
+	const EventEmitter = require('core/events').EventEmitter;
 	
+	const Scrollbar = require('core/scrollbar');
+	const Sidepanel = require('core/sidepanel');
 	
-	var HomeSettings = require('modules/home/ext/settings');
-	var Editor = require('modules/editor/editor');
-	var Explorer = require('modules/explorer/explorer');
-	var EditorSession = require('modules/editor/ext/session');
+	const App = require('core/app');
+	const Workspace = require('core/workspace');
+	const Notification = require('core/notification');
+	const Popup = require('core/popup');
 	
-	var GitUtils = require('./utils');
+	// modules
+	const HomeSettings = require('modules/home/ext/settings');
 	
-	var FILE_STATUS = {
-		STAGED: "STAGED",
-		UNMODIFIED: "UNMODIFIED",
-		IGNORED: "IGNORED",
-		UNTRACKED: "UNTRACKED",
-		MODIFIED: "MODIFIED",
-		ADDED: "ADDED",
-		DELETED: "DELETED",
-		RENAMED: "RENAMED",
-		COPIED: "COPIED",
-		UNMERGED: "UNMERGED"
-	};
+	const Explorer = require('modules/explorer/explorer');
 	
-	var FILE_STATUS_NAMES = {
-		ADDED: "New file",
-		COPIED: "Copied",
-		DELETED: "Deleted",
-		IGNORED: "Ignored",
-		MODIFIED: "Modified",
-		RENAMED: "Renamed",
-		STAGED: "Staged",
-		UNMERGED: "Unmerged",
-		UNMODIFIED: "Unmodified",
-		UNTRACKED: "Untracked",
-	};
+	const Editor = require('modules/editor/editor');
+	const EditorEditors = require('modules/editor/ext/editors');
+	const EditorSession = require('modules/editor/ext/session');
+	const EditorToolbar = require('modules/editor/session/toolbar');
+	const EditorRevisions = require('modules/editor/ext/revisions');
 	
-	var Extension = ExtensionManager.register({
-		name: 'git',
-		settings: {
-			name: '',
-			email: '',
-			useVerboseDiff: false,
+	// git
+	const GitWorkspace = require('./workspace');
+	const GitUtils = require('./utils');
+	const Cell = require('./cell');
+	
+	const UI = {
+		Merge: {
+			template: require('text!./ui/merge.html'),
+			props: ['form'],
 		},
-		css: [
-			'extension'
-		]
-	});
+		Branch: {
+			template: require('text!./ui/branch.html'),
+			props: ['form'],
+		},
+		Remote: {
+			template: require('text!./ui/remote.html'),
+			props: ['form'],
+		},
+		Pull: {
+			template: require('text!./ui/pullPush.html'),
+			props: ['form'],
+		},
+		Push: {
+			template: require('text!./ui/pullPush.html'),
+			props: ['form'],
+		},
+	};
 	
-	Extension.extend({
-		_data: {},
-		init: function() {
+	/**
+	 * GitPanel
+	 * @desc Sidepanel for git
+	 */
+	class GitPanel extends Sidepanel {
+		constructor(...args) {
+			super(...args);
+			
+			this.el.classList.add('extension-git-panel');
+			
+			this.toolbar = $(`<ul class="panel-toolbar background-color-bg">
+				<li class="devicons devicons-git_commit" data-name="file"></li>
+				<li class="devicons devicons-git_branch" data-name="branch"></li>
+				<li data-name="remote">
+					<i class="nc-icon-glyph arrows-1_simple-down"></i>
+					<i class="nc-icon-glyph arrows-1_simple-up"></i>
+				</li>
+				<li class="nc-icon-glyph ui-1_simple-remove" data-name="close"></li>
+			</ul>`)[0];
+			this.el.appendChild(this.toolbar);
+			
+			this.content = $(`<div class="panel-content"></div>`)[0];
+			this.el.appendChild(this.content);
+			
+			for (let i = 0; i < this.toolbar.children.length; i++) {
+				this.toolbar.children[i]
+				.addEventListener('click', this.onSelectTab.bind(this));
+			}
+			
+			this._git = null;
+			this.selectedTab = null;
+			
+			this.message = $(`<div class="message"></div>`)[0];
+			this.content.appendChild(this.message);
+			
+			this.list = $(`<ul class="list"></ul>`)[0];
+			this.content.appendChild(this.list);
+			
+			this.bottombar = $(`<div class="bottombar"></div>`)[0];
+			this.content.appendChild(this.bottombar);
+			
+			this.onItemAdd = this.onItemAdd.bind(this);
+			this.onItemRemove = this.onItemRemove.bind(this);
+			this.onItemUpdate = this.onItemUpdate.bind(this);
+			
+			this.onTreeListUpdate = this.onTreeListUpdate.bind(this);
+		}
+		
+		setup() {
+			// collection
+			this.collection = new CollectionCluster.Collection(this.list, {
+				size: {
+					height: 30,
+				},
+				inset: {
+					top: 5,
+					bottom: 5,
+				},
+				getLength: this.getListLength.bind(this),
+				cellForIndex: this.cellForIndex.bind(this)
+			});
+			
+			this.collection.registerCell('file', Cell.File);
+			this.collection.registerCell('folder', Cell.Folder);
+			this.collection.registerCell('branch', Cell.Branch);
+			this.collection.registerCell('remote', Cell.Remote);
+			this.collection.hook();
+			
+			// scrollbar
+			this.scrollbar = new Scrollbar(this.list, {
+				isRelative: true,
+			});
+		}
+		
+		get git() {
+			return this._git;
+		}
+		
+		set git(git) {
+			// unhook old git
+			this._git && this.hookGit(this._git, false);
+			
+			this._git = git;
+			
+			if (!git || !this.isToggled) {
+				return;
+			}
+			
+			this.hookGit(this._git, true);
+			
+			this.updateSelected();
+		}
+		
+		hookGit(git, toggle) {
+			let fn = toggle ? 'on' : 'off';
+			
+			git
+			[fn]('item.add', this.onItemAdd)
+			[fn]('item.remove', this.onItemRemove)
+			[fn]('item.update', this.onItemUpdate);
+			
+			git.files.lists.default[fn]('update', this.onTreeListUpdate);
+		}
+		
+		onSelectTab(e) {
+			let name = e.currentTarget.getAttribute('data-name');
+			
+			if (name === 'close') {
+				return this.emit('panel.close', this);
+			}
+			
+			if (this.selectedTab === name) {
+				return;
+			}
+			
+			this.selectTab(name);
+		}
+		
+		selectTab(name) {
+			let tab;
+			for (let i = 0; i < this.toolbar.children.length; i++) {
+				tab = this.toolbar.children[i];
+				tab.classList[tab.getAttribute('data-name') === name ? 'add' : 'remove']('active');
+			}
+			
+			this.selectedTab = name;
+			this.updateSelected();
+			this.emit('tab', name);
+		}
+		
+		// update selected tab
+		updateSelected() {
+			this.clear();
+			
+			if (this.git.isLoading) {
+				return this.loading();
+			}
+			
+			if (this.git.isNotInit) {
+				return this.notInit();
+			}
+			
+			switch (this.selectedTab) {
+				case 'file':
+					this.files();
+				break;
+				case 'branch':
+					this.branches();
+				break;
+				case 'remote':
+					this.remotes();
+				break;
+			}
+		}
+		
+		loading() {
+			this.showMessage($('<div class="spinner active size-32"></div>')[0]);
+		}
+		
+		notInit() {
+			this.showMessage($(`<div>
+				<span>Git repository not initialised.</span>
+				<button class="button">Init</button>
+			</div>`)[0]);
+		}
+		
+		showMessage(message) {
+			this.toolbar.style.display = 'none';
+			this.message.style.display = 'block';
+			
+			this.message.appendChild(message);
+		}
+		
+		showContent() {
+			this.list.style.display = 'block';
+			this.bottombar.style.display = 'block';
+		}
+		
+		resize() {
+			this.collection.resize();
+			this.scrollbar.update();
+		}
+		
+		files() {
+			this.showContent();
+			
+			this.bottombar.appendChild($(`<div class="message"><textarea placeholder="Commit message"></textarea></div>`)[0]);
+			
+			this.bottombar.appendChild($(`<ul class="items">
+				<li><button class="action-refresh nc-icon-glyph arrows-1_refresh-68"></button></li>
+				<li><button class="action-amend">Amend</button></li>
+				<li class="enlarge"><button class="action-commit">Commit</button></li>
+			</ul>`)[0]);
+			
+			this.bottombar.querySelector('.action-commit').addEventListener('click', () => {
+				this.commit();
+			});
+			
+			this.bottombar.querySelector('.action-amend').addEventListener('click', (e) => {
+				e.currentTarget.classList.toggle('selected');
+				
+				if (e.currentTarget.classList.contains('selected')) {
+					this.amend();
+				} else {
+					this.bottombar.querySelector('textarea').value = '';
+				}
+			});
+			
+			this.bottombar.querySelector('.action-refresh').addEventListener('click', () => {
+				this.git.status();
+			});
+			
+			this.resize();
+			
+			let git = this.git;
+			
+			this.collection.reload();
+			this.scrollbar.update();
+		}
+		
+		branches() {
+			this.showContent();
+			
+			this.bottombar.appendChild($(`<ul class="items">
+				<li><button class="action-refresh nc-icon-glyph arrows-1_refresh-68"></button></li>
+				<li class="enlarge"><button class="action-new">New branch</button></li>
+			</ul>`)[0]);
+			
+			this.bottombar.querySelector('.action-new').addEventListener('click', () => {
+				this.newBranch();
+			});
+			
+			this.bottombar.querySelector('.action-refresh').addEventListener('click', () => {
+				this.loadBranches();
+			});
+			
+			this.resize();
+			
+			let git = this.git;
+			
+			if (!git.branches.length) {
+				return this.loadBranches();
+			}
+			
+			this.collection.reload();
+			this.scrollbar.update();
+		}
+		
+		loadBranches() {
+			let git = this.git;
+			
+			return git.getBranches().catch(e => {
+				return null;
+			}).then(res => {
+				if (!res) {
+					return;
+				}
+				
+				git.$updateBranches(res.list);
+				git.branch = res.current;
+				
+				this.collection.reload();
+				this.scrollbar.update();
+			});
+		}
+		
+		remotes() {
+			this.showContent();
+			
+			this.bottombar.appendChild($(`<ul class="items">
+				<li><button class="action-refresh nc-icon-glyph arrows-1_refresh-68"></button></li>
+				<li class="enlarge"><button class="action-fetch">Fetch</button></li>
+				<li class="enlarge"><button class="action-pull"><i class="nc-icon-glyph arrows-1_simple-down"></i></button></li>
+				<li class="enlarge"><button class="action-push"><i class="nc-icon-glyph arrows-1_simple-up"></i></button></li>
+				<li class="enlarge"><button class="action-new nc-icon-glyph ui-2_fat-add"></button></li>
+			</ul>`)[0]);
+			
+			this.bottombar.querySelector('.action-new').addEventListener('click', () => {
+				this.newRemote();
+			});
+			
+			this.bottombar.querySelector('.action-refresh').addEventListener('click', () => {
+				this.loadRemotes();
+			});
+			
+			this.bottombar.querySelector('.action-fetch').addEventListener('click', () => {
+				this.onRemoteFetch();
+			});
+			
+			this.bottombar.querySelector('.action-pull').addEventListener('click', () => {
+				this.onRemotePull();
+			});
+			
+			this.bottombar.querySelector('.action-push').addEventListener('click', () => {
+				this.onRemotePush();
+			});
+			
+			this.resize();
+			
+			let git = this.git;
+			
+			if (!git.remotes.length) {
+				return this.loadRemotes();
+			}
+			
+			this.collection.reload();
+			this.scrollbar.update();
+		}
+		
+		loadRemotes() {
+			let git = this.git;
+			
+			return git.getRemotes().catch(e => {
+				return null;
+			}).then(res => {
+				if (!res) {
+					return;
+				}
+				
+				git.$updateRemotes(res);
+				
+				if (git.remotes.length) {
+					git.remotes[0].isSelected = true;
+				}
+				
+				this.collection.reload();
+				this.scrollbar.update();
+			});
+		}
+		
+		// get collection list length
+		getListLength() {
+			if (!this.git || this.isClear) {
+				return 0;
+			}
+			
+			switch (this.selectedTab) {
+				case 'file':
+					return this.git.files.lists.default.length;
+				case 'branch':
+					return this.git.branches.length;
+				case 'remote':
+					return this.git.remotes.length;
+				default:
+					return 0;
+			}
+		}
+		
+		// get collection cell
+		cellForIndex(collection, index) {
+			let item;
+			
+			switch (this.selectedTab) {
+				case 'file':
+					item = this.git.files.lists.default[index];
+					break;
+				case 'branch':
+					item = this.git.branches[index];
+					break;
+				case 'remote':
+					item = this.git.remotes[index];
+					break;
+			}
+			
+			let cell = collection.dequeueReusableCell(item.constructor.cell || this.selectedTab);
+			cell.delegate = this;
+			cell.update(item);
+			
+			return cell;
+		}
+		
+		// File Cell - delegate
+		onFileCheck(cell) {
+			let file = cell.item;
+			
+			if (file.isLoading) {
+				return;
+			}
+			
+			let git = this.git;
+			
+			file.isLoading = true;
+			cell.updateState();
+			
+			git[file.isStaged ? 'unstage' : 'stage'](file.path.substr(1)).then(res => {
+				return git.statusFiles(file.path.substr(1));
+			}).then(res => {
+				file.isLoading = false;
+				cell.updateState();
+			}).catch(e => {
+				file.isLoading = false;
+				cell.updateState();
+				
+				Notification.open({
+					title: 'Git - Stage failed',
+					type: 'error',
+					description: e.message.replace(/(?:\r\n|\r|\n)/g, '<br>'),
+				});
+			});
+		}
+		
+		onFileDiff(cell) {
+			let file = cell.item;
+			
+			if (file.isLoading || !file.isDiff) {
+				return;
+			}
+			
+			let git = this.git;
+			
+			file.isLoading = true;
+			cell.updateState();
+			
+			git.diff(file.path.substr(1)).then(res => {
+				file.isLoading = false;
+				cell.updateState();
+				
+				let diff = GitUtils.formatDiff(res);
+				
+				Popup.open({
+					title: 'Git - Diff',
+					content: {
+						template: '<div>\
+							<div class="extension-git-diff">\
+								<table><tbody>' + diff + '</tbody></table>\
+							</div>\
+						</div>',
+						props: ['form'],
+					},
+					namespace: 'editor.git',
+					actions: [],
+				});
+			}).catch(e => {
+				file.isLoading = false;
+				cell.updateState();
+				
+				Notification.open({
+					title: 'Git - Diff failed',
+					type: 'error',
+					description: e.message.replace(/(?:\r\n|\r|\n)/g, '<br>'),
+				});
+			});
+		}
+		
+		onFileDiscard(cell) {
+			let file = cell.item;
+			
+			if (file.isLoading) {
+				return;
+			}
+			
+			let git = this.git;
+			
+			Popup.confirm({
+				title: 'Confirm',
+				message: 'Are you sure to discard changes in <strong>%s</strong> file?'.sprintfEscape(file.name),
+				confirm: 'Discard',
+				onConfirm: () => {
+					file.isLoading = true;
+					cell.updateState();
+					
+					git.unstage(file.path.substr(1)).then(res => {
+						return git.checkoutFiles(file.path.substr(1));
+					}).then(res => {
+						git.updateTree([], [file.path.substr(1)]);
+					}).catch(e => {
+						file.isLoading = false;
+						cell.updateState();
+						
+						Notification.open({
+							title: 'Git - Discard failed',
+							type: 'error',
+							description: e.message.replace(/(?:\r\n|\r|\n)/g, '<br>'),
+						});
+					});
+				},
+			});
+		}
+		
+		// Branch Cell - delegate
+		onBranchSelect(cell) {
+			let branch = cell.item;
+			
+			if (branch.isLoading || branch.isCurrent) {
+				return;
+			}
+			
+			let git = this.git;
+			
+			branch.isLoading = true;
+			cell.updateState();
+			
+			git.checkout(branch.name).then(res => {
+				branch.isLoading = false;
+				cell.updateState();
+			}).catch(e => {
+				branch.isLoading = false;
+				cell.updateState();
+				
+				Notification.open({
+					title: 'Git - Checkout failed',
+					type: 'error',
+					description: e.message.replace(/(?:\r\n|\r|\n)/g, '<br>'),
+				});
+			});
+		}
+		
+		onBranchDelete(cell, force) {
+			let branch = cell.item;
+			
+			if (branch.isLoading || branch.isCurrent || branch.isMaster) {
+				return;
+			}
+			
+			let git = this.git;
+			
+			Popup.confirm({
+				title: 'Confirm',
+				message: 'Are you sure to delete <strong>%s</strong> branch?'.sprintfEscape(branch.name),
+				confirm: 'Delete',
+				onConfirm: () => {
+					branch.isLoading = true;
+					cell.updateState();
+					
+					git.deleteBranch(branch.name, force).catch(e => {
+						branch.isLoading = false;
+						cell.updateState();
+						
+						Notification.open({
+							title: 'Git - Delete branches failed',
+							type: 'error',
+							description: e.message.replace(/(?:\r\n|\r|\n)/g, '<br>'),
+						});
+					});
+				},
+			});
+		}
+		
+		onBranchMerge(cell) {
+			let branch = cell.item;
+			
+			if (branch.isLoading || branch.isCurrent) {
+				return;
+			}
+			
+			let git = this.git;
+			
+			Popup.form({
+				title: 'Merge branch - ' + git.branch + ' ... ' + branch.name,
+				action: 'Merge',
+				content: UI.Merge,
+				form: {
+					currentBranch: git.branch,
+					mergeBranch: branch.name,
+					data: {
+						message: '',
+						rebase: false,
+						noff: false,
+					}
+				},
+				onSubmit: (popup) => {
+					return git[popup.form.data.rebase ? 'rebaseBranch' : 'mergeBranch']
+					(branch.name, popup.form.data.message, popup.form.data.noff)
+					.then(res => {
+						Popup.close(popup);
+						
+						Notification.open({
+							title: 'Git - Branches merged',
+							type: 'success',
+							autoClose: true,
+							description: res.indexOf('up-to-date.') !== -1 ? res : '',
+						});
+					});
+				}
+			});
+		}
+		
+		newBranch() {
+			let git = this.git;
+			
+			Popup.form({
+				title: 'New branch',
+				action: 'Create',
+				content: UI.Branch,
+				form: {
+					branches: git.branches.map(item => item.name),
+					data: {
+						origin: git.branch,
+						name: '',
+					}
+				},
+				onSubmit: (popup) => {
+					return git.createBranch(popup.form.data.name, popup.form.data.origin)
+					.then(res => {
+						Popup.close(popup);
+					});
+				}
+			});
+		}
+		
+		// Remote Cell - delegate
+		onRemoteSelect(cell) {
+			let remote = cell.item;
+			
+			if (remote.isSelected) {
+				return;
+			}
+			
+			this.git.$selectRemote(remote.name);
+		}
+		
+		onRemoteDelete(cell) {
+			let remote = cell.item;
+			
+			if (remote.isLoading) {
+				return;
+			}
+			
+			let git = this.git;
+			
+			Popup.confirm({
+				title: 'Confirm',
+				message: 'Are you sure to delete <strong>%s</strong> remote?'.sprintfEscape(remote.name),
+				confirm: 'Delete',
+				onConfirm: () => {
+					remote.isLoading = true;
+					cell.updateState();
+					
+					git.deleteRemote(remote.name).catch(e => {
+						remote.isLoading = false;
+						cell.updateState();
+						
+						Notification.open({
+							title: 'Git - Delete remote failed',
+							type: 'error',
+							description: e.message.replace(/(?:\r\n|\r|\n)/g, '<br>'),
+						});
+					});
+				},
+			});
+		}
+		
+		onRemoteFetch() {
+			let git = this.git;
+			let { index, remote } = git.selectedRemote;
+			
+			if (!remote || remote.isLoading) {
+				return;
+			}
+			
+			let cell = this.collection.cellForIndex(index);
+			
+			remote.isLoading = true;
+			cell.updateState();
+			
+			git.fetchRemote(remote.name).then(res => {
+				remote.isLoading = false;
+				cell && cell.updateState();
+			}).catch(e => {
+				remote.isLoading = false;
+				cell && cell.updateState();
+				
+				Notification.open({
+					title: 'Git - Fetch failed',
+					type: 'error',
+					description: e.message.replace(/(?:\r\n|\r|\n)/g, '<br>'),
+				});
+			});
+		}
+		
+		onRemotePull() {
+			let git = this.git;
+			let { index, remote } = git.selectedRemote;
+			
+			if (!remote || remote.isLoading) {
+				return;
+			}
+			
+			git.getRemoteBranches(remote.name).then(res => {
+				if (!res.length) {
+					throw new Error('No remote branches found, please try fetching the remote.');
+				}
+				
+				Popup.form({
+					title: 'Pull remote - ' + remote.name,
+					action: 'Pull',
+					content: UI.Pull,
+					form: {
+						types: [{
+							value: 'default',
+							label: 'Default merge',
+						}, {
+							value: 'avoid',
+							label: 'Avoid manual merging',
+						}, {
+							value: 'commit',
+							label: 'Merge without commit',
+						}, {
+							value: 'rebase',
+							label: 'Use rebase',
+						}, {
+							value: 'soft',
+							label: 'Use soft reset',
+						}],
+						branches: res,
+						data: {
+							branch: res.indexOf(git.branch) !== -1 ? git.branch : res[0],
+							type: 'default',
+						}
+					},
+					onSubmit: (popup) => {
+						let { type, branch } = popup.form.data;
+						
+						return git.fetchRemote(remote.name).then(res => {
+							if (['default', 'avoid', 'commit'].indexOf(type) !== -1) {
+								return git.mergeRemote(remote.name, branch, type === 'avoid', type === 'commit');
+							} else if (type === 'rebase') {
+								return git.rebaseRemote(remote.name, branch);
+							} else if (type === 'soft') {
+								return git.resetRemote(remote.name, branch);
+							}
+						}).then(res => {
+							Popup.close(popup);
+							
+							if (!res) {
+								return;
+							}
+							
+							Notification.open({
+								title: 'Git - Pull',
+								type: 'success',
+								description: res.replace(/(?:\r\n|\r|\n)/g, '<br>'),
+							});
+						});
+					}
+				});
+			}).catch(e => {
+				Notification.open({
+					title: 'Git - List branches failed',
+					type: 'error',
+					description: e.message.replace(/(?:\r\n|\r|\n)/g, '<br>'),
+				});
+			});
+		}
+		
+		onRemotePush() {
+			let git = this.git;
+			let { index, remote } = git.selectedRemote;
+			
+			if (!remote || remote.isLoading) {
+				return;
+			}
+			
+			git.getBranches().then(res => {
+				Popup.form({
+					title: 'Push remote - ' + remote.name,
+					action: 'Push',
+					content: UI.Push,
+					form: {
+						types: [{
+							value: 'default',
+							label: 'Default push',
+						}, {
+							value: 'force',
+							label: 'Forced push',
+						}, {
+							value: 'delete',
+							label: 'Delete remote branch',
+						}],
+						branches: res.list.map(item => item.name),
+						data: {
+							branch: git.branch,
+							type: 'default',
+						}
+					},
+					onSubmit: (popup) => {
+						let { type, branch } = popup.form.data;
+						
+						return git.pushRemote(remote.name, branch, type === 'force', type === 'delete').then(res => {
+							Popup.close(popup);
+							
+							if (!res) {
+								return;
+							}
+							
+							Notification.open({
+								title: 'Git - Push',
+								type: 'success',
+								description: res.replace(/(?:\r\n|\r|\n)/g, '<br>'),
+							});
+						});
+					}
+				});
+			}).catch(e => {
+				Notification.open({
+					title: 'Git - List branches failed',
+					type: 'error',
+					description: e.message.replace(/(?:\r\n|\r|\n)/g, '<br>'),
+				});
+			});
+		}
+		
+		newRemote() {
+			let git = this.git;
+			
+			Popup.form({
+				title: 'New remote',
+				action: 'Create',
+				content: UI.Remote,
+				form: {
+					data: {
+						name: '',
+						url: '',
+					}
+				},
+				onSubmit: (popup) => {
+					return git.createRemote(popup.form.data.name, popup.form.data.url)
+					.then(res => {
+						Popup.close(popup);
+					});
+				}
+			});
+		}
+		
+		// files
+		commit() {
+			let message = this.bottombar.querySelector('textarea').value.trim();
+			
+			if (!message) {
+				return;
+			}
+			
+			let git = this.git;
+			
+			this.bottombar.querySelector('textarea').value = '';
+			
+			git.commit(message, this.bottombar.querySelector('.action-amend').classList.contains('selected')).then(res => {
+				git.status();
+				
+				Notification.open({
+					title: 'Git - Commit',
+					type: 'success',
+					description: res.replace(/(?:\r\n|\r|\n)/g, '<br>'),
+				});
+			}).catch(e => {
+				Notification.open({
+					title: 'Git - Commit failed',
+					type: 'error',
+					description: e.message.replace(/(?:\r\n|\r|\n)/g, '<br>'),
+				});
+			});
+		}
+		
+		amend() {
+			let git = this.git;
+			
+			git.getLastCommitMessage().then(res => {
+				let message = this.bottombar.querySelector('textarea');
+				
+				if (this.git === git && message) {
+					message.value = res;
+				}
+			}).catch(e => {
+				
+			});
+		}
+		
+		// Collection data pipe
+		onItemAdd(git, item, index) {
+			if (this.selectedTab !== item.constructor.tab) {
+				return;
+			}
+			
+			this.collection.insert(index, 1);
+		}
+		
+		onItemRemove(git, item, index) {
+			if (this.selectedTab !== item.constructor.tab) {
+				return;
+			}
+			
+			this.collection.delete(index, 1);
+		}
+		
+		onItemUpdate(git, item, index) {
+			if (this.selectedTab !== item.constructor.tab) {
+				return;
+			}
+			
+			let cell = this.collection.cellForIndex(index);
+			cell && cell.updateState();
+		}
+		
+		onTreeListUpdate(type, index, length, insert) {
+			if (this.selectedTab !== 'file' || this.git.isTreeReset) {
+				return;
+			}
+			
+			switch (type) {
+				case 'item':
+					let cell = this.collection.cellForIndex(index);
+					cell && cell.update(length, insert);
+				break;
+				
+				case 'insert':
+				case 'delete':
+				case 'deleteInsert':
+					this.collection[type](index, length, insert);
+					this.scrollbar.update();
+				break;
+			}
+		}
+		
+		clear() {
+			this.isClear = true;
+			
+			this.toolbar.style.display = 'flex';
+			
+			this.message.style.display = 'none';
+			this.list.style.display = 'none';
+			this.bottombar.style.display = 'none';
+			
+			this.message.innerHTML = '';
+			this.bottombar.innerHTML = '';
+			
+			this.collection.reload();
+			
+			this.isClear = false;
+		}
+	}
+	
+	
+	/**
+	 * Extension
+	 */
+	class Extension extends ExtensionManager.Extension {
+		constructor() {
+			super({
+				name: 'git',
+				settings: {
+					name: '',
+					email: '',
+					// useVerboseDiff: false,
+				},
+				storage: {
+					panelWidth: null,
+					sidepanelTab: 'file',
+				},
+				css: [
+					'extension'
+				],
+			});
+			
+			this.toolbarItem = null;
+			this.sidepanel = null;
+			this.data = {};
+			
+			this.onResize = this.onResize.bind(this);
+			
+			this.onWorkspaceConnected = this.onWorkspaceConnected.bind(this);
+			this.onWorkspaceReconnect = this.onWorkspaceReconnect.bind(this);
+			this.onWorkspaceActive = this.onWorkspaceActive.bind(this);
+			this.onWorkspaceDisconnected = this.onWorkspaceDisconnected.bind(this);
+			
+			this.onGitUpdate = this.onGitUpdate.bind(this);
+			this.onGitBranch = this.onGitBranch.bind(this);
+			
+			this.onPanelOpen = this.onPanelOpen.bind(this);
+			this.onPanelClose = this.onPanelClose.bind(this);
+			this.onPanelResize = this.onPanelResize.bind(this);
+			this.onPanelTab = this.onPanelTab.bind(this);
+			
+			this.onRevisionsOpen = this.onRevisionsOpen.bind(this);
+			this.onRevisionsClose = this.onRevisionsClose.bind(this);
+			
+			this.onFileUpdate = this.onFileUpdate.bind(this);
+			this.onFileSave = this.onFileSave.bind(this);
+			this.onShare = this.onShare.bind(this);
+		}
+	
+		init() {
+			super.init();
+			
 			var self = this;
 			
-			GitUtils.setExtension(this);
-			
+			// add settings to menu
 			HomeSettings.add(this.name, {
 				label: 'Git',
-				icon: require('text!./menu.svg'),
+				iconName: 'devicons devicons-git',
 				sections: [{
 					title: 'Git',
 					module: this.path,
@@ -76,1879 +1057,286 @@ define(function(require, exports, module) {
 						name: 'email',
 						label: 'Email',
 						type: 'text'
-					}, {
-						name: 'useVerboseDiff',
-						label: 'Show verbose output in diffs',
-						type: 'checkbox',
 					}]
 				}]
 			});
 			
-			Editor.addToMenu('tools', this.name, {
-				label: 'Git',
-				isAvailable: function() {
-					var workspace = Workspace.getActive();
-					
-					return workspace && workspace.isTerminal;
-				},
-				observes: ['workspace', this.name],
-				children: this.getMenuChildren.bind(this)
+			// create persistant toolbar item
+			this.toolbarItem = new EditorToolbar.Item({
+				name: this.name,
+				template: '<li><div class="select"><i class="icon icon-medium devicons devicons-git_branch"></i><span class="text-overflow">master</span><span class="spinner active"></span></div></li>',
+				side: 'right',
+				priority: 5,
+				isPersistant: true,
+				onSelect: () => {
+					App.toggleSidepanel(this.name);
+				}
 			});
 			
-			Workspace.callByStatus(Workspace.status.CONNECTED, function() {
-				self.onWorkspaceConnected(this);
+			this.toolbarItem.nameEl = this.toolbarItem.el.querySelector('.text-overflow');
+			this.toolbarItem.loaderEl = this.toolbarItem.el.querySelector('.spinner');
+			
+			this.toolbarItem.el.style.display = 'none';
+			
+			EditorSession.toolbar.add(this.toolbarItem);
+			
+			// create sidepanel
+			this.sidepanel = new GitPanel(this.name, document.createElement('div'), this.storage.panelWidth);
+			this.sidepanel.canOpen = false;
+			
+			this.sidepanel.on('open', this.onPanelOpen)
+			.on('close', this.onPanelClose)
+			.on('resize', this.onPanelResize)
+			.on('tab', this.onPanelTab);
+			
+			App.el.appendChild(this.sidepanel.el);
+			App.addSidepanel(this.sidepanel);
+			
+			// setup sidepanel when its in DOM
+			this.sidepanel.setup();
+			
+			App.on('resize', this.onResize);
+			
+			// setup data binding
+			Workspace.callByStatus(Workspace.status.connected, (workspace) => {
+				this.onWorkspaceConnected(workspace);
 			});
+			
+			if (Workspace.getActive(true)) {
+				this.onWorkspaceActive(Workspace.getActive());
+			}
 			
 			Workspace.on('connect', this.onWorkspaceConnected)
-			.on('disconnect', this.onWorkspaceDisconnected);
-		},
-		destroy: function() {
+			.on('reconnect', this.onWorkspaceReconnect)
+			.on('disconnect', this.onWorkspaceDisconnected)
+			.on('active', this.onWorkspaceActive)
+			.on('share.git.branch', this.onShare);
+			
+			// handle revisions
+			EditorRevisions.on('open', this.onRevisionsOpen)
+			.on('close', this.onRevisionsClose);
+			
+			// handle file updates
+			Explorer.on('new', this.onFileUpdate)
+			.on('move', this.onFileUpdate)
+			.on('delete', this.onFileUpdate);
+			
+			EditorEditors.on('save', this.onFileSave);
+		}
+		
+		destroy() {
+			super.destroy();
+			
+			// remove settings menu item
 			HomeSettings.remove(this.name);
 			
-			Editor.removeFromMenu('tools', this.name);
+			// remove toolbar item
+			EditorSession.toolbar.remove(this.toolbarItem);
+			this.toolbarItem = null;
 			
-			App.trigger('observe', {name: this.name});
+			// remove sidepanel
+			App.removeSidepanel(this.sidepanel);
+			this.sidepanel.destroy();
+			this.sidepanel = null;
 			
+			App.off('resize', this.onResize);
+			
+			// remove data binding
 			Workspace.off('connect', this.onWorkspaceConnected)
-			.off('disconnect', this.onWorkspaceDisconnected);
+			.off('reconnect', this.onWorkspaceReconnect)
+			.off('disconnect', this.onWorkspaceDisconnected)
+			.off('active', this.onWorkspaceActive)
+			.off('share.git.branch', this.onShare);
 			
-			this._data = {};
-		},
-		getMenuChildren: function() {
-			var workspaceId = Workspace.getActive(true);
-			var data = this._data[workspaceId];
-			var items = [];
+			// unbind revisions
+			EditorRevisions.off('open', this.onRevisionsOpen)
+			.off('close', this.onRevisionsClose);
 			
-			if (data) {
-				items.push({
-					label: 'Directory: <strong>' + data.directory + '</strong>',
-					exec: function() {
-						Extension.directory.popup(workspaceId);
-					}
-				});
+			// unbind file handlers
+			Explorer.off('new', this.onFileUpdate)
+			.off('move', this.onFileUpdate)
+			.off('delete', this.onFileUpdate);
+			
+			EditorEditors.off('save', this.onFileSave);
+			
+			// clear data
+			this.data = {};
+		}
+		
+		get active() {
+			return this.data[Workspace.getActive(true)];
+		}
+		
+		onResize() {
+			this.sidepanel.resize();
+		}
+		
+		onWorkspaceConnected(workspace) {
+			// git needs access to terminal
+			if (!workspace.isTerminal) {
+				return;
 			}
 			
-			items.push({
-				label: 'Refresh status',
-				spacer: true,
-				exec: function() {
-					Extension.action.status(workspaceId);
-				}
-			});
+			let directory = Workspace.storage.sessions[workspace.id].settings.gitDirectory;
 			
-			if (data && data.initialised) {
-				items.push({
-					label: 'Status',
-					exec: function() {
-						Extension.action.status(workspaceId).done(function() {
-							Extension.status.popup(workspaceId);
-						});
-					}
-				}, {
-					label: 'Branch: <strong>' + data.branch + '</strong>',
-					exec: function() {
-						Extension.action.getBranches(workspaceId).done(function() {
-							Extension.branches.popup(workspaceId);
-						});
-					}
-				}, {
-					label: 'Remotes',
-					exec: function() {
-						Extension.action.getRemotes(workspaceId).done(function() {
-							Extension.remotes.popup(workspaceId);
-						});
-					}
-				}, {
-					label: 'History',
-					exec: function() {
-						Extension.action.getHistory(workspaceId, data.branch, null, null).done(function(out) {
-							Extension.history.popup(workspaceId, null, out);
-						}).fail(function(err) {
-							Extension.onResult(null, err);
-						});
-					}
-				}, {
-					label: 'History for active file',
-					isAvailable: function() {
-						var session = EditorSession.getActive('file');
-						
-						var directory = Extension._data[workspaceId].directory || '';
-						directory = directory == '/' ? '' : directory;
-						
-						return session && session.storage.workspaceId == workspaceId && session.storage.path.substr(0, directory.length + 1) == directory + '/';
-					},
-					exec: function() {
-						var session = EditorSession.getStorage().sessions[EditorSession.getActive('file')];
-						
-						if (!session) {
-							return;
-						}
-						
-						var directory = Extension._data[workspaceId].directory || '';
-						directory = directory == '/' ? '' : directory;
-						
-						Extension.action.getHistory(workspaceId, data.branch, 0, session.path.substr(directory.length + 1)).done(function(out) {
-							Extension.history.popup(workspaceId, session.path, out);
-						}).fail(function(err) {
-							Extension.onResult(null, err);
-						});
-					}
-				});
-			} else {
-				items.push({
-					label: 'Init',
-					exec: function() {
-						Extension.action.init(workspaceId).done(function() {
-							Notification.open({
-								type: 'success',
-								title: 'Git',
-								description: 'Repository was successfully created.',
-								autoClose: true
-							});
-							
-							Extension.action.status(workspaceId);
-						});
-					}
-				}, {
-					label: 'Clone',
-					exec: function() {
-						Extension.clone.popup(workspaceId);
-					}
-				});
-			}
+			let git = new GitWorkspace(workspace.id, directory);
+			git.on('update', this.onGitUpdate);
+			git.on('branch', this.onGitBranch);
+			git.getSettings = this.getSettings.bind(this);
+			this.data[workspace.id] = git;
 			
-			return items;
-		},
-		onWorkspaceConnected: function(e) {
-			var workspaceId = e.id;
-			var directory = Workspace.getStorage().sessions[workspaceId].settings.gitDirectory;
-			directory = directory ? directory : '/';
+			git.status();
+		}
+		
+		onWorkspaceReconnect(workspace) {
+			let git = this.data[workspace.id];
 			
-			Extension._data[workspaceId] = {
-				initialised: false,
-				branch: null,
-				branches: [],
-				remotes: [],
-				files: [],
-				directory: directory
-			};
-			
-			Extension.action.status(workspaceId).always(function() {
-				if (Workspace.getStorage().active == workspaceId) {
-					App.trigger('observe', {name: Extension.name});
-				}
-			});
-		},
-		onWorkspaceDisconnected: function(e) {
-			var workspaceId = e.id;
-			delete Extension._data[workspaceId];
-		},
-		update: function(workspaceId, obj) {
-			if (!this._data[workspaceId]) {
-				return false;
-			}
-			
-			if (obj === null) {
-				obj = {
-					initialised: false,
-					branch: null,
-					branches: [],
-					remotes: [],
-					files: []
-				};
-			}
-			
-			for (var i in obj) {
-				this._data[workspaceId][i] = obj[i];
-			}
-		},
-		directory: {
-			popup: function(workspaceId) {
-				var $content = $('<div>\
-					<div class="message">\
-						<form autocomplete="false"><fieldset>\
-							<dl>\
-								<dt>Directory</dt>\
-								<dd><input type="text" name="input-directory" placeholder="/"></dd>\
-							</dl>\
-						</fieldset></form>\
-						<div class="error"></div>\
-					</div>\
-					<div class="actions"></div>\
-				</div>');
-				
-				$content.find(':input[name="input-directory"]').val(Extension._data[workspaceId].directory).cautocomplete({
-					prependIfNotPresent: '/',
-					source: (function() {
-						var folders = [];
-						
-						Editor.$element.find('.editor-explorer .list-workspace[data-workspace="' + workspaceId + '"] .row.folder').each(function() {
-							folders.push($(this).attr('data-path'));
-						});
-						
-						return folders;
-					}())
-				});
-				
-				$content.find('.actions').append(Popup.createBtn('Save', 'black', function() {
-					var directory = $content.find(':input[name="input-directory"]').val().trim();
-					if (directory.substr(0, 1) != '/') {
-						directory = '/' + directory;
-					}
-					
-					Extension.directory.setPath(workspaceId, directory);
-					
-					Popup.close($content);
-					
-					return false;
-				}));
-				$content.find('.actions').append(Popup.createBtn('Cancel', 'black'));
-				
-				Popup.open({
-					title: 'Git - Directory',
-					content: $content,
-					namespace: 'editor.git'
-				});
-			},
-			setPath: function(workspaceId, directory) {
-				if (Extension._data[workspaceId]) {
-					Extension._data[workspaceId].directory = directory;
-					
-					Workspace.getStorage().sessions[workspaceId].settings.gitDirectory = directory;
-					Workspace.saveStorage();
-					
-					Extension.action.status(workspaceId);
-				}
-			}
-		},
-		status: {
-			parse: function(lines) {
-				var status = {
-					initialised: true,
-					branch: null,
-					files: [],
-					needReset: []
-				};
-				
-				lines = (lines || '').split("\n");
-				var first = lines.shift().substr(2);
-				var branch = first.trim().match(/^Initial commit on (\S+)/) || first.trim().match(/^([^\. ]+)/);
-				if (branch) {
-					status.branch = branch[1];
-				}
-				
-				lines.forEach(function(line) {
-					var statusStaged = line.substring(0, 1),
-						statusUnstaged = line.substring(1, 2),
-						fileStatus = [],
-						file = line.substring(3).replace(/\"/gi, '');
-					
-					if (statusStaged !== " " && statusUnstaged !== " " &&
-						statusStaged !== "?" && statusUnstaged !== "?") {
-						if (file.indexOf("->") !== -1) {
-							file = file.split("->")[1].trim();
-						}
-						
-						if (file) {
-							status.needReset.push(file);
-						}
-						return;
-					}
-	
-					var statusChar;
-					if (statusStaged !== " " && statusStaged !== "?") {
-						fileStatus.push(FILE_STATUS.STAGED);
-						statusChar = statusStaged;
-					} else {
-						statusChar = statusUnstaged;
-					}
-					
-					switch (statusChar) {
-						case " ": fileStatus.push(FILE_STATUS.UNMODIFIED); break;
-						case "!": fileStatus.push(FILE_STATUS.IGNORED); break;
-						case "?": fileStatus.push(FILE_STATUS.UNTRACKED); break;
-						case "M": fileStatus.push(FILE_STATUS.MODIFIED); break;
-						case "A": fileStatus.push(FILE_STATUS.ADDED); break;
-						case "D": fileStatus.push(FILE_STATUS.DELETED); break;
-						case "R": fileStatus.push(FILE_STATUS.RENAMED); break;
-						case "C": fileStatus.push(FILE_STATUS.COPIED); break;
-						case "U": fileStatus.push(FILE_STATUS.UNMERGED); break;
-					}
-					
-					var display = file,
-						io = file.indexOf("->");
-					
-					if (io !== -1) {
-						file = file.substring(io + 2).trim();
-					}
-					
-					status.files.push({
-						status: fileStatus,
-						display: display,
-						file: file,
-						name: file.substring(file.lastIndexOf("/") + 1)
-					});
-				});
-				
-				return status;
-			},
-			popup: function(workspaceId) {
-				var data = Extension._data[workspaceId];
-				if (!data) {
-					return;
-				}
-				
-				var $content = $('<div>\
-					<div class="extension-git-list sscrollbar">\
-						<ul></ul>\
-					</div>\
-					<div class="message">\
-						<fieldset>\
-							<dl><dd class="full">\
-								<input type="text" class="input-message" placeholder="Enter commit message here..">\
-							</dd></dl>\
-						</fieldset>\
-						<div class="error"></div>\
-					</div>\
-					<div class="actions"></div>\
-				</div>');
-				
-				data.files.forEach(function(file) {
-					var folders = file.file.split('/');
-					folders.pop();
-					var $list = $content.find('.extension-git-list > ul');
-					
-					var $folder = $list.find('li.git-folder[data-folder="' + folders.join('/') + '"]');
-					
-					if (!$folder.length) {
-						var curFolder = [];
-						folders.forEach(function(folder) {
-							curFolder.push(folder);
-							$folder = $list.find('li.git-folder[data-folder="' + curFolder.join('/') + '"]');
-							
-							if (!$folder.length) {
-								$folder = $('<li class="git-folder" data-folder="' + curFolder.join('/') + '">\
-									<div class="inner">\
-										<div class="col"><div class="checkbox"><i class="nc-icon-outline ui-1_check"></i></div></div>\
-										<div class="col">\
-											<div class="name"><stronng>' + folder + '</strong></div>\
-										</div>\
-									</div>\
-									<ul></ul>\
-								</li>');
-								
-								$list.append($folder);
-								
-								$list = $folder.children('ul');
-							} else {
-								$list = $folder.children('ul');
-							}
-						});
-					} else {
-						$list = $folder.children('ul');
-					}
-					
-					var $file = $('<li class="git-file" data-file="' + file.file + '">\
-						<div class="inner">\
-							<div class="col"><div class="checkbox"><i class="nc-icon-outline ui-1_check"></i></div></div>\
-							<div class="col">\
-								<div class="name"><span class="filename"></span> (<span class="status"></span>)</div>\
-							</div>\
-							<div class="col"></div>\
-						</div>\
-					</li>');
-					
-					var allowDiff = file.status.indexOf(FILE_STATUS.UNTRACKED) === -1 &&
-						file.status.indexOf(FILE_STATUS.RENAMED) === -1 &&
-						file.status.indexOf(FILE_STATUS.DELETED) === -1;
-					var allowDelete = file.status.indexOf(FILE_STATUS.UNTRACKED) !== -1 ||
-						file.status.indexOf(FILE_STATUS.STAGED) !== -1 &&
-						file.status.indexOf(FILE_STATUS.ADDED) !== -1;
-					var allowUndo = !allowDelete;
-					
-					if (allowDiff) {
-						$file.find('.col').eq(2).append('<div class="action action-diff">Diff</div>');
-					}
-					if (allowUndo) {
-						$file.find('.col').eq(2).append('<div class="action action-discard">Discard</div>');
-					}
-					
-					$file.find('.name .filename').html(file.name)
-					.end().find('.name .status').text((file.status.map(function(status) {
-						return FILE_STATUS_NAMES[status];
-					}).join(', ')));
-					
-					if (file.status.indexOf(FILE_STATUS.STAGED) !== -1) {
-						$file.addClass('selected');
-					}
-					
-					$list.append($file);
-				});
-				
-				$content.find('.extension-git-list > ul').on('click', '.action-diff', function() {
-					var $file = $(this).parents('.git-file').eq(0);
-					
-					Extension.action.diffFile(workspaceId, $file.attr('data-file')).done(function(out) {
-						var diff = GitUtils.formatDiff(out);
-						
-						var $content = $('<div>\
-							<div class="extension-git-diff">\
-								<table><tbody></tbody></table>\
-							</div>\
-						</div>');
-						
-						$content.find('table tbody').append(diff);
-						
-						Popup.open({
-							title: 'Git - Diff (' + $file.attr('data-file') + ')',
-							content: $content,
-							namespace: 'editor.git',
-						});
-					});
-				}).on('click', '.action-discard', function() {
-					var $file = $(this).parents('.git-file').eq(0);
-					
-					Popup.confirm({
-						title: __('Confirm'),
-						content: __('Are you sure to discard changes in <strong>%s</strong> file?', $file.attr('data-file')),
-						name: __('Reset'),
-						namespace: Extension.name,
-						callback: function() {
-							Extension.action.unstage(workspaceId, $file.attr('data-file')).done(function() {
-								Extension.action.checkout(workspaceId, $file.attr('data-file')).done(function() {
-									Extension.action.status(workspaceId, $file.attr('data-file')).done(function(files) {
-										Extension.status.update(workspaceId, $file, files);
-									});
-								});
-							})
-						}
-					});
-				});
-				
-				$content.find('.extension-git-list ul').find('.checkbox').click(function() {
-					var $li = $(this).parents('li').eq(0);
-					$li.toggleClass('selected');
-					
-					if ($li.hasClass('git-folder')) {
-						$li.find('li')[$li.hasClass('selected') ? 'addClass' : 'removeClass']('selected');
-					}
-					
-					$li.parents('.git-folder').each(function() {
-						if (!$(this).children('ul').children('li:not(.selected)').length) {
-							$(this).addClass('selected');
-						} else {
-							$(this).removeClass('selected');
-						}
-					});
-					
-					var path = $li.hasClass('git-file') ? $li.attr('data-file') : $li.attr('data-folder') + '/';
-					
-					Extension.action[$li.hasClass('selected') ? 'stage' : 'unstage'](workspaceId, path).done(function() {
-						Extension.action.status(workspaceId, path).done(function(files) {
-							Extension.status.update(workspaceId, $li, files);
-						});
-					});
-				}).end().find('.git-folder > .inner .name').click(function() {
-					$(this).parents('.git-folder').eq(0).children('ul').stop().slideToggle(300);
-				}).end().find('.git-folder').each(function() {
-					if (!$(this).find('li.git-file:not(.selected)').length) {
-						$(this).addClass('selected');
-					} else {
-						$(this).removeClass('selected');
-					}
-					
-					if (!$(this).find('li.git-file.selected').length) {
-						$(this).children('ul').hide();
-					}
-				});
-				
-				var $amend = $('<div class="extension-git-check"><span><i class="nc-icon-outline ui-1_check"></i></span> Amend last commit</div>').click(function() {
-					$(this).toggleClass('checked');
-					
-					
-					if ($(this).hasClass('checked')) {
-						Extension.action.getLastCommitMessage(workspaceId).done(function(message) {
-							if (!$content.find('.input-message').val().trim()) {
-								$content.find('.input-message').val(message.trim());
-							}
-						});
-					}
-				});
-				
-				var openPush = false;
-				
-				var commit = function() {
-					var message = $content.find('.input-message').val().trim();
-					
-					if (!message) {
-						$content.find('.error').text('Please, fill commit message in.');
-						return false;
-					}
-					
-					if (!$content.find('.extension-git-list li.git-file.selected').length) {
-						$content.find('.error').text('No files to commit.');
-						return false;
-					}
-					
-					Extension.action.commit(workspaceId, message, $amend.hasClass('checked')).done(function(out) {
-						Notification.open({
-							type: 'success',
-							title: 'Git',
-							description: 'Updates were successfully commited.',
-							autoClose: true
-						});
-						
-						Extension.action.status(workspaceId);
-						
-						if (openPush) {
-							Extension.action.getRemotes(workspaceId).done(function() {
-								Extension.remotes.popup(workspaceId);
-							});
-						}
-					}).fail(function(err) {
-						return Extension.onResult(null, err);
-					});
-					
-					Popup.close($content);
-					
-					return false;
-				};
-				
-				$content.find('.actions').append(Popup.createBtn('Commit', 'black', function() {
-					openPush = false;
-					return commit();
-				}));
-				$content.find('.actions').append(Popup.createBtn('Cancel', 'black'));
-				$content.find('.actions').append($amend);
-				
-				Popup.open({
-					title: 'Git - Status',
-					content: $content,
-					namespace: 'editor.git'
-				});
-				
-				$content.find('.input-message').focus();
-			},
-			update: function(workspaceId, $li, files) {
-				var data = Extension._data[workspaceId];
-				if (!data) {
-					return;
-				}
-				
-				var path = $li.hasClass('git-file') ? $li.attr('data-file') : $li.attr('data-folder') + '/';
-				var mustBeEqual = $li.hasClass('git-file');
-				var $parent = $li.parent();
-				
-				if (!files.length) {
-					$li.remove();
-				}
-				
-				for (var i = 0; i < files.length; i++) {
-					var file = files[i];
-					
-					var $file = $parent.find('li.git-file[data-file="' + file.file + '"]');
-					
-					var allowDiff = file.status.indexOf(FILE_STATUS.UNTRACKED) === -1 &&
-						file.status.indexOf(FILE_STATUS.RENAMED) === -1 &&
-						file.status.indexOf(FILE_STATUS.DELETED) === -1;
-					var allowDelete = file.status.indexOf(FILE_STATUS.UNTRACKED) !== -1 ||
-						file.status.indexOf(FILE_STATUS.STAGED) !== -1 &&
-						file.status.indexOf(FILE_STATUS.ADDED) !== -1;
-					var allowUndo = !allowDelete;
-					
-					var $col = $file.find('.col').eq(2);
-					$col.empty();
-					
-					if (allowDiff) {
-						$col.append('<div class="action action-diff">Diff</div>');
-					}
-					if (allowUndo) {
-						$col.append('<div class="action action-discard">Discard</div>');
-					}
-					
-					$file.find('.name .status').text((file.status.map(function(status) {
-						return FILE_STATUS_NAMES[status];
-					}).join(', ')));
-				}
-			}
-		},
-		branches: {
-			popup: function(workspaceId) {
-				var data = Extension._data[workspaceId];
-				if (!data) {
-					return;
-				}
-				
-				var $content = $('<div>\
-					<div class="extension-git-list sscrollbar" style="height: 160px;">\
-						<ul></ul>\
-					</div>\
-					<div class="message">\
-						<fieldset>\
-							<dl>\
-								<dt>Origin branch</dt>\
-								<dd>\
-									<select name="input-branch"></select>\
-								</dd>\
-							</dl>\
-							<dl>\
-								<dt>Branch name</dt>\
-								<dd>\
-									<input type="text" name="input-name">\
-								</dd>\
-							</dl>\
-						</fieldset>\
-						<div class="error"></div>\
-					</div>\
-					<div class="actions"></div>\
-				</div>');
-				
-				this.list(workspaceId, $content, data.branches, data.branch);
-				
-				$content.find('.actions').append(Popup.createBtn('Create branch', 'black', function() {
-					var name = $content.find(':input[name="input-name"]').val().trim();
-					var originBranch = $content.find(':input[name="input-branch"]').val();
-					
-					if (!name) {
-						$content.find('.error').text('Please, fill name in.');
-						return false;
-					}
-					
-					$content.find('.error').html('');
-					
-					Extension.action.createBranch(workspaceId, name, originBranch).done(function() {
-						Extension.action.getBranches(workspaceId).done(function(branches, branch) {
-							Extension.branches.list(workspaceId, $content, branches, branch);
-							
-							$content.find(':input[name="input-name"]').val('');
-							
-							Extension.action.status(workspaceId);
-						});
-					}).fail(function(err) {
-						Extension.onResult(null, err);
-					});
-					
-					return false;
-				}));
-				
-				Popup.open({
-					title: 'Git - Branches',
-					content: $content,
-					namespace: 'editor.git'
-				});
-			},
-			list: function(workspaceId, $content, branches, branch) {
-				var $list = $content.find('.extension-git-list > ul');
-				var $select = $content.find(':input[name="input-branch"]');
-				var currentBranch = branch;
-				
-				$list.children().addClass('check').removeClass('selected');
-				branches.forEach(function(branch) {
-					if ($list.find('.git-item[data-name="' + branch.name + '"]').length) {
-						$list.find('.git-item[data-name="' + branch.name + '"]').removeClass('check');
-						return;
-					}
-					
-					$select.append('<option value="' + branch.name + '" ' + (branch.name == currentBranch ? 'selected' : '') +'>' + branch.name + '</option>');
-					
-					if (branch.remote) {
-						return;
-					}
-					
-					var $branch = $('<li class="git-item" data-name="' + branch.name + '" data-remote="' + (branch.remote || '') + '">\
-						<div class="inner">\
-							<div class="col"><div class="radiobox"></div></div>\
-							<div class="col"><div class="name"><strong>' + branch.name + '</strong></div></div>\
-							<div class="col"></div>\
-						</div>\
-					</li>');
-					
-					if (branch.remote) {
-						$branch.find('.radiobox').remove();
-					} else {
-						$branch.find('.col').eq(2).append('<div class="action action-merge">Merge</div>');
-					}
-					
-					if (branch.name != 'master') {
-						$branch.find('.col').eq(2).append('<div class="action action-delete nc-icon-outline ui-1_simple-remove"></div>');
-					}
-					
-					$list.append($branch);
-				});
-				
-				$list.children('.check').each(function() {
-					var name = $(this).attr('data-name');
-					$(this).remove();
-					$select.find('option[value="' + name + '"]').remove();
-				});
-				
-				$list.children('[data-name="' + branch + '"]').addClass('selected');
-				
-				$content.find('.extension-git-list .git-item:not(.binded)')
-				.addClass('binded').find('.radiobox').click(function() {
-					var $item = $(this).parents('.git-item').eq(0);
-					
-					if ($item.hasClass('selected')) {
-						return;
-					}
-					
-					Extension.action.checkout(workspaceId, $item.find('.name').text()).done(function(out) {
-						$item.parent().children().removeClass('selected');
-						$item.addClass('selected');
-						
-						Extension.action.status(workspaceId);
-					}).fail(function(err) {
-						return Extension.onResult(null, err);
-					});
-				}).end().find('.action-delete').click(function() {
-					var $item = $(this).parents('.git-item').eq(0);
-					var name = $item.attr('data-name');
-					var remote = $item.attr('data-remote');
-					
-					Popup.confirm({
-						title: 'Git - Delete a branch',
-						content: 'Are you sure to delete <strong>' + name + '</strong> branch?',
-						name: 'Yes',
-						callback: function() {
-							Extension.action.deleteBranch(workspaceId, name, true).done(function() {
-								Extension.action.getBranches(workspaceId).done(function(branches, branch) {
-									Extension.branches.list(workspaceId, $content, branches, branch);
-								});
-							}).fail(function(err) {
-								Extension.onResult(null, err);
-							});
-						}
-					});
-				}).end().find('.action-merge').click(function() {
-					var $item = $(this).parents('.git-item').eq(0);
-					var name = $item.find('.name').text();
-					
-					Extension.branches.merge(workspaceId, name);
-				});
-			},
-			merge: function(workspaceId, branch) {
-				var data = Extension._data[workspaceId];
-				if (!data) {
-					return;
-				}
-				
-				var $content = $('<div>\
-					<div class="message">\
-						<fieldset>\
-							<dl>\
-								<dt>Target branch</dt>\
-								<dd><strong>' + data.branch + '</strong></dd>\
-							</dl>\
-							<dl>\
-								<dt>Merge message</dt>\
-								<dd>\
-									<input type="text" name="input-message" placeholder="Merge branch \'' + branch + '\'">\
-								</dd>\
-							</dl>\
-							<dl>\
-								<dt></dt>\
-								<dd><label for="git-input-rebase"><input type="checkbox" name="input-rebase" id="git-input-rebase"> Use REBASE</label></dd>\
-							</dl>\
-							<dl>\
-								<dt></dt>\
-								<dd><label for="git-input-commit"><input type="checkbox" name="input-noff" id="git-input-commit"> Create a merge commit even when the merge resolves as a fast-forward</label></dd>\
-							</dl>\
-						</fieldset>\
-						<div class="error"></div>\
-					</div>\
-					<div class="actions"></div>\
-				</div>');
-				
-				$content.find('.actions').append(Popup.createBtn('Merge', 'black', function() {
-					var message = $content.find(':input[name="input-message"]').val().trim();
-					var rebase = $content.find(':input[name="input-rebase"]').is(':checked');
-					var noFf = $content.find(':input[name="input-noff"]').is(':checked');
-					
-					var $result = Extension.onResult();
-					
-					if (rebase) {
-						Extension.action.rebaseBranch(workspaceId, branch).done(function(out) {
-							$result.find('.extension-git-result').html((out || ''));
-							Extension.action.status(workspaceId);
-						}).fail(function(err) {
-							$result.find('.extension-git-result').html((err || ''));
-						});
-					} else {
-						Extension.action.mergeBranch(workspaceId, branch, message, noFf).done(function(out) {
-							$result.find('.extension-git-result').html((out || ''));
-							Extension.action.status(workspaceId);
-						}).fail(function(err) {
-							$result.find('.extension-git-result').html((err || ''));
-						});
-					}
-					
-					Popup.close($content);
-					
-					return false;
-				}));
-				$content.find('.actions').append(Popup.createBtn('Cancel', 'black'));
-				
-				Popup.open({
-					title: 'Git - Merge branch (' + branch + ')',
-					content: $content,
-					namespace: 'editor.git'
-				});
-			},
-		},
-		remotes: {
-			popup: function(workspaceId) {
-				var data = Extension._data[workspaceId];
-				if (!data) {
-					return;
-				}
-				
-				var $content = $('<div>\
-					<div class="extension-git-list sscrollbar" style="height: 160px;">\
-						<ul></ul>\
-					</div>\
-					<div class="message">\
-						<fieldset>\
-							<dl>\
-								<dt>Name</dt>\
-								<dd>\
-									<input type="text" name="input-name">\
-								</dd>\
-							</dl>\
-							<dl>\
-								<dt>URL</dt>\
-								<dd>\
-									<input type="text" name="input-url">\
-								</dd>\
-							</dl>\
-						</fieldset>\
-						<div class="error"></div>\
-					</div>\
-					<div class="actions"></div>\
-				</div>');
-				
-				this.list(workspaceId, $content, data.remotes);
-				
-				$content.find('.actions').append(Popup.createBtn('Create remote', 'black', function() {
-					var name = $content.find(':input[name="input-name"]').val().trim();
-					var url = $content.find(':input[name="input-url"]').val().trim();
-					
-					if (!name || !url) {
-						$content.find('.error').text('Please, fill name and url in.');
-						return false;
-					}
-					
-					Extension.action.createRemote(workspaceId, name, url).done(function() {
-						Extension.action.getRemotes(workspaceId).done(function(remotes) {
-							Extension.remotes.list(workspaceId, $content, remotes);
-							$content.find(':input[name="input-name"]').val('');
-							$content.find(':input[name="input-url"]').val('');
-						});
-					}).fail(function(err) {
-						Extension.onResult(null, err);
-					});
-					
-					return false;
-				}));
-				
-				Popup.open({
-					title: 'Git - Remotes',
-					content: $content,
-					namespace: 'editor.git'
-				});
-			},
-			list: function(workspaceId, $content, remotes) {
-				var $list = $content.find('.extension-git-list > ul');
-				
-				$list.children().addClass('check');
-				
-				remotes.forEach(function(remote) {
-					var cleanRemoteUrl = remote.url.replace(/^http(s?):\/\/(.*)\@(.*)$/, 'http$1://$3');
-					
-					if ($list.find('.git-item[data-name="' + remote.name + '"]').length) {
-						$list.find('.git-item[data-name="' + remote.name + '"]').removeClass('check').find('.name').html('<strong>' + remote.name + '</strong> (' + cleanRemoteUrl + ')');
-						return;
-					}
-					
-					var $remote = $('<li class="git-item" data-name="' + remote.name + '">\
-						<div class="inner">\
-							<div class="col"></div>\
-							<div class="col"><div class="name"><strong>' + remote.name + '</strong> (' + cleanRemoteUrl + ')</div></div>\
-							<div class="col"></div>\
-						</div>\
-					</li>');
-					
-					$remote.find('.col').eq(2).append('<div class="action action-fetch">Fetch</div>');
-					$remote.find('.col').eq(2).append('<div class="action action-pull">Pull</div>');
-					$remote.find('.col').eq(2).append('<div class="action action-push">Push</div>');
-					
-					$remote.find('.col').eq(2).append('<div class="action action-delete nc-icon-outline ui-1_simple-remove"></div>');
-					
-					$list.append($remote);
-				});
-				
-				$list.children('.check').remove();
-				
-				$content.find('.extension-git-list .git-item:not(.binded)')
-				.addClass('binded').find('.action-delete').click(function() {
-					var $item = $(this).parents('.git-item').eq(0);
-					var name = $item.attr('data-name');
-					
-					Popup.confirm({
-						title: 'Git - Delete a remote',
-						content: 'Are you sure to delete <strong>' + name + '</strong> remote?',
-						name: 'Yes',
-						callback: function() {
-							Extension.action.deleteRemote(workspaceId, name).done(function() {
-								Extension.action.getRemotes(workspaceId).done(function(remotes) {
-									Extension.remotes.list(workspaceId, $content, remotes);
-								});
-							}).fail(function(err) {
-								Extension.onResult(null, err);
-							});
-						}
-					});
-				}).end().find('.action-fetch').click(function() {
-					var $item = $(this).parents('.git-item').eq(0);
-					
-					Extension.remotes.fetch(workspaceId, $item.attr('data-name'), $content);
-				}).end().find('.action-pull').click(function() {
-					var $item = $(this).parents('.git-item').eq(0);
-					
-					Extension.action.getBranches(workspaceId).done(function() {
-						Extension.remotes.pull(workspaceId, $item.attr('data-name'), $content);
-					});
-				}).end().find('.action-push').click(function() {
-					var $item = $(this).parents('.git-item').eq(0);
-					
-					Extension.action.getBranches(workspaceId).done(function() {
-						Extension.remotes.push(workspaceId, $item.attr('data-name'), $content);
-					});
-				});
-			},
-			fetch: function(workspaceId, remoteName, $remotesContent) {
-				var data = Extension._data[workspaceId];
-				if (!data) {
-					return;
-				}
-				
-				var remote = data.remotes.filter(function(remote) {
-					return remote.name == remoteName;
-				})[0];
-				
-				if (!(/^https?:/.test(remote.url))) {
-					var $result = Extension.onResult();
-					
-					Extension.action.fetchRemote(workspaceId, remoteName).done(function(out) {
-						Popup.close($result);
-					}).fail(function(err) {
-						return Extension.resultData($result, null, err);
-					});
-					
-					return false;
-				}
-				
-				var $content = $('<div>\
-					<div class="message">\
-						<form autocomplete="false"><fieldset>\
-						</fieldset></form>\
-						<div class="error"></div>\
-					</div>\
-					<div class="actions"></div>\
-				</div>');
-				
-				this.generateCredentialsInputs($content, remote);
-				
-				$content.find('.actions').append(Popup.createBtn('Fetch', 'black', function() {
-					var url = remote.url;
-					var username = ($content.find(':input[name="input-username"]').val() || '').trim();
-					var password = ($content.find(':input[name="input-password"]').val() || '').trim();
-					var save = $content.find(':input[name="input-save"]').is(':checked');
-					
-					var urlData = Extension.parseUrl(url, username, password, save);
-					var $result = Extension.onResult();
-					
-					Extension.remotes.fetchWithSettings(workspaceId, remote, urlData, $remotesContent).done(function(out) {
-						Popup.close($result);
-					}).fail(function(err) {
-						return Extension.resultData($result, null, err);
-					});
-					
-					Popup.close($content);
-					
-					return false;
-				}));
-				$content.find('.actions').append(Popup.createBtn('Cancel', 'black'));
-				
-				Popup.open({
-					title: 'Git - Fetch',
-					content: $content,
-					namespace: 'editor.git'
-				});
-			},
-			pull: function(workspaceId, remoteName, $remotesContent) {
-				var data = Extension._data[workspaceId];
-				if (!data) {
-					return;
-				}
-				
-				var remote = data.remotes.filter(function(remote) {
-					return remote.name == remoteName;
-				})[0];
-				
-				var $content = $('<div>\
-					<div class="message">\
-						<form autocomplete="false"><fieldset>\
-							<dl>\
-								<dt>Branch</dt>\
-								<dd><select name="input-branch"></select></dd>\
-							</dl>\
-							<dl>\
-								<dt></dt>\
-								<dd><label for="git-input-tracking"><input type="checkbox" name="input-tracking" id="git-input-tracking"> Set this branch as new a new tracking branch</label></dd>\
-							</dl>\
-							<dl>\
-								<dt>Type</dt>\
-								<dd>\
-									<label for="git-input-default"><input type="radio" name="input-type" id="git-input-default" value="default" checked> Default merge</label>\
-									<label for="git-input-avoid"><input type="radio" name="input-type" id="git-input-avoid" value="avoid"> Avoid manual merging</label>\
-									<label for="git-input-commit"><input type="radio" name="input-type" id="git-input-commit" value="commit"> Merge without commit</label>\
-									<label for="git-input-rebase"><input type="radio" name="input-type" id="git-input-rebase" value="rebase"> Use rebase</label>\
-									<label for="git-input-soft"><input type="radio" name="input-type" id="git-input-soft" value="soft"> Use soft reset</label>\
-								</dd>\
-							</dl>\
-						</fieldset></form>\
-						<div class="error"></div>\
-					</div>\
-					<div class="actions"></div>\
-				</div>');
-				
-				this.generateCredentialsInputs($content, remote);
-				
-				data.branches.forEach(function(branch) {
-					if (branch.remote != remoteName) {
-						return;
-					}
-					
-					$content.find(':input[name="input-branch"]').append('<option value="' + branch.name.substr(remoteName.length+1) + '">' + branch.name + '</option>');
-				});
-				
-				if ($content.find(':input[name="input-branch"] option[value="' + data.branch + '"]').length) {
-					$content.find(':input[name="input-branch"]').val(data.branch);
-				}
-				
-				$content.find('.actions').append(Popup.createBtn('Pull', 'black', function() {
-					var branch = $content.find(':input[name="input-branch"]').val();
-					var type = $content.find(':input[name="input-type"]:checked').attr('value');
-					var tracking = $content.find(':input[name="input-tracking"]').is(':checked');
-					
-					var url = remote.url;
-					var username = ($content.find(':input[name="input-username"]').val() || '').trim();
-					var password = ($content.find(':input[name="input-password"]').val() || '').trim();
-					var save = $content.find(':input[name="input-save"]').is(':checked');
-					
-					var urlData = Extension.parseUrl(url, username, password, save);
-					
-					if (!branch) {
-						$content.find('.error').text('Please, select a branch.');
-						return false;
-					}
-					
-					var $result = Extension.onResult();
-					
-					var onDone = function(out) {
-						Extension.resultData($result, out, null);
-						
-						if (tracking) {
-							Extension.action.checkout(workspaceId, branch);
-						}
-					};
-					
-					var onFail = function(err) {
-						Extension.resultData($result, null, err);
-					};
-					
-					Extension.remotes.fetchWithSettings(workspaceId, remote, urlData, $remotesContent).done(function(out) {
-						if (['default', 'avoid', 'commit'].indexOf(type) !== -1) {
-							Extension.action.mergeRemote(workspaceId, remoteName, branch, type == 'avoid', type == 'commit').done(onDone).fail(onFail);
-						} else if (type == 'rebase') {
-							Extension.action.rebaseRemote(workspaceId, remoteName, branch).done(onDone).fail(onFail);
-						} else if (type == 'soft') {
-							Extension.action.resetRemote(workspaceId, remoteName, branch).done(onDone).fail(onFail);
-						}
-					}).fail(function(err) {
-						return Extension.resultData($result, null, err);
-					});
-					
-					Popup.close($content);
-					
-					return false;
-				}));
-				$content.find('.actions').append(Popup.createBtn('Cancel', 'black'));
-				
-				Popup.open({
-					title: 'Git - Pull from remote (' + remoteName + ')',
-					content: $content,
-					namespace: 'editor.git'
-				});
-			},
-			push: function(workspaceId, remoteName, $remotesContent) {
-				var data = Extension._data[workspaceId];
-				if (!data) {
-					return;
-				}
-				
-				var remote = data.remotes.filter(function(remote) {
-					return remote.name == remoteName;
-				})[0];
-				
-				var $content = $('<div>\
-					<div class="message">\
-						<form autocomplete="false"><fieldset>\
-							<dl>\
-								<dt>Type</dt>\
-								<dd>\
-									<label for="git-input-default"><input type="radio" name="input-type" id="git-input-default" value="default" checked> Default push</label>\
-									<label for="git-input-forced"><input type="radio" name="input-type" id="git-input-forced" value="forced"> Forced push</label>\
-									<label for="git-input-delete"><input type="radio" name="input-type" id="git-input-delete" value="delete"> Delete remote branch</label>\
-								</dd>\
-							</dl>\
-							<dl>\
-								<dt>Branch</dt>\
-								<dd><select name="input-branch"></select></dd>\
-							</dl>\
-						</fieldset></form>\
-						<div class="error"></div>\
-					</div>\
-					<div class="actions"></div>\
-				</div>');
-				
-				this.generateCredentialsInputs($content, remote);
-				
-				$content.find(':input[name="input-type"]').change(function() {
-					if (!$(this).is(':checked')) {
-						return false;
-					}
-					
-					var isDelete = $(this).attr('value') == 'delete';
-					
-					$content.find(':input[name="input-branch"]').empty();
-					
-					data.branches.forEach(function(branch) {
-						if ((isDelete && branch.remote != remoteName) || (!isDelete && branch.remote)) {
-							return;
-						}
-						
-						$content.find(':input[name="input-branch"]').append('<option value="' + branch.name.substr(branch.remote ? branch.remote.length+1 : 0) + '">' + branch.name + '</option>');
-					});
-				}).change();
-				
-				if ($content.find(':input[name="input-branch"] option[value="' + data.branch + '"]').length) {
-					$content.find(':input[name="input-branch"]').val(data.branch);
-				}
-				
-				$content.find('.actions').append(Popup.createBtn('Push', 'black', function() {
-					var branch = $content.find(':input[name="input-branch"]').val();
-					var type = $content.find(':input[name="input-type"]:checked').attr('value');
-					
-					var url = remote.url;
-					var username = ($content.find(':input[name="input-username"]').val() || '').trim();
-					var password = ($content.find(':input[name="input-password"]').val() || '').trim();
-					var save = $content.find(':input[name="input-save"]').is(':checked');
-					
-					var urlData = Extension.parseUrl(url, username, password, save);
-					
-					if (!branch) {
-						$content.find('.error').text('Please, select a branch.');
-						return false;
-					}
-					
-					var $result = Extension.onResult();
-					
-					Extension.remotes.pushWithSettings(workspaceId, remote, branch, type == 'forced', type == 'delete', urlData, $remotesContent).done(function(out) {
-						Extension.resultData($result, out, null);
-					}).fail(function(err) {
-						Extension.resultData($result, null, err);
-					});
-					
-					Popup.close($content);
-					
-					return false;
-				}));
-				$content.find('.actions').append(Popup.createBtn('Cancel', 'black'));
-				
-				Popup.open({
-					title: 'Git - Push to remote (' + remoteName + ')',
-					content: $content,
-					namespace: 'editor.git'
-				});
-			},
-			generateCredentialsInputs: function($content, remote) {
-				if (/^https?:/.test(remote.url)) {
-					$content.find('fieldset').append('<dl>\
-						<dt>Username</dt>\
-						<dd><input type="text" name="input-username" placeholder="Optional"></dd>\
-					</dl>\
-					<dl>\
-						<dt>Password</dt>\
-						<dd><input type="password" name="input-password" autocomplete="new-password" placeholder="Optional"></dd>\
-					</dl>\
-					<dl>\
-						<dt></dt>\
-						<dd><label for="git-input-save"><input type="checkbox" name="input-save" id="git-input-save"> Save credentials to remote url (in plain text)</label></dd>\
-					</dl>');
-					
-					var auth = /:\/\/([^:]+):?([^@]*)@/.exec(remote.url);
-					
-					if (auth) {
-						$content.find(':input[name="input-username"]').val(auth[1]);
-						$content.find(':input[name="input-password"]').val(auth[2]);
-						$content.find(':input[name="input-save"]').prop('checked', true);
-					}
-				}
-			},
-			fetchWithSettings: function(workspaceId, remote, urlData, $remotesContent) {
-				var d = $.Deferred();
-				
-				var onRemoteUpdated = function(out) {
-					Extension.action.fetchRemote(workspaceId, remote.name).done(function(out) {
-						if (urlData.url != urlData.saveUrl) {
-							Extension.action.setRemoteUrl(workspaceId, 'origin', urlData.saveUrl).done(function() {
-								Extension.action.getRemotes(workspaceId).done(function(remotes) {
-									Extension.remotes.list(workspaceId, $remotesContent, remotes);
-								});
-							});
-						} else if (urlData.url != remote.url) {
-							Extension.action.getRemotes(workspaceId).done(function(remotes) {
-								Extension.remotes.list(workspaceId, $remotesContent, remotes);
-							});
-						}
-						
-						d.resolve(out);
-					}).fail(function(err) {
-						d.reject(err);
-					});
-				};
-				
-				if (remote.url != urlData.url) {
-					Extension.action.setRemoteUrl(workspaceId, remote.name, urlData.url).done(function(out) {
-						onRemoteUpdated(out)
-					}).fail(function(err) {
-						d.reject(err);
-					});
-				} else {
-					onRemoteUpdated(null);
-				}
-				
-				return d.promise();
-			},
-			pushWithSettings: function(workspaceId, remote, branch, forced, remove, urlData, $remotesContent) {
-				var d = $.Deferred();
-				
-				var onRemoteUpdated = function(out) {
-					Extension.action.pushRemote(workspaceId, remote.name, branch, forced, remove).done(function(out) {
-						if (urlData.url != urlData.saveUrl) {
-							Extension.action.setRemoteUrl(workspaceId, 'origin', urlData.saveUrl).done(function() {
-								Extension.action.getRemotes(workspaceId).done(function(remotes) {
-									Extension.remotes.list(workspaceId, $remotesContent, remotes);
-								});
-							});
-						} else if (urlData.url != remote.url) {
-							Extension.action.getRemotes(workspaceId).done(function(remotes) {
-								Extension.remotes.list(workspaceId, $remotesContent, remotes);
-							});
-						}
-						
-						d.resolve(out);
-					}).fail(function(err) {
-						d.reject(err);
-					});
-				};
-				
-				if (remote.url != urlData.url) {
-					Extension.action.setRemoteUrl(workspaceId, remote.name, urlData.url).done(function(out) {
-						onRemoteUpdated(out);
-					}).fail(function(err) {
-						d.reject(err);
-					});
-				} else {
-					onRemoteUpdated(null);
-				}
-				
-				return d.promise();
-			}
-		},
-		history: {
-			parse: function(out) {
-				var separator = "_._",
-					newline = "_.nw._";
-				
-				out = out.substring(0, out.length - newline.length);
-				return !out ? [] : out.split(newline).map(function(line) {
-
-					var data = line.trim().split(separator),
-						commit = {};
-
-					commit.hashShort = data[0];
-					commit.hash = data[1];
-					commit.author = data[2];
-					commit.date = new Date(data[3]);
-					commit.email = data[4];
-					commit.subject = data[5];
-					commit.body = data[6];
-
-					if (data[7]) {
-						var tags = data[7];
-						var regex = new RegExp("tag: ([^,|\)]+)", "g");
-						tags = tags.match(regex);
-
-						for (var key in tags) {
-							if (tags[key] && tags[key].replace) {
-								tags[key] = tags[key].replace("tag:", "");
-							}
-						}
-						commit.tags = tags;
-					}
-
-					return commit;
-				});
-			},
-			avatarStyle: function(author, email) {
-				var seededRandom = function(max, min, seed) {
-					max = max || 1;
-					min = min || 0;
-
-					seed = (seed * 9301 + 49297) % 233280;
-					var rnd = seed / 233280.0;
-
-					return min + rnd * (max - min);
-				};
-
-				// Use `seededRandom()` to generate a pseudo-random number [0-16] to pick a color from the list
-				var seedBase = parseInt(author.charCodeAt(3).toString(), email.length),
-					seed = parseInt(email.charCodeAt(seedBase.toString().substring(1, 2)).toString(), 16),
-					colors = [
-						"#ffb13b", "#dd5f7a", "#8dd43a", "#2f7e2f", "#4141b9", "#3dafea", "#7e3e3e", "#f2f26b",
-						"#864ba3", "#ac8aef", "#f2f2ce", "#379d9d", "#ff6750", "#8691a2", "#d2fd8d", "#88eadf"
-					],
-					texts = [
-						"#FEFEFE", "#FEFEFE", "#FEFEFE", "#FEFEFE", "#FEFEFE", "#FEFEFE", "#FEFEFE", "#333333",
-						"#FEFEFE", "#FEFEFE", "#333333", "#FEFEFE", "#FEFEFE", "#FEFEFE", "#333333", "#333333"
-					],
-					picked = Math.floor(seededRandom(0, 16, seed));
-
-				return "background-color: " + colors[picked] + "; color: " + texts[picked];
-			},
-			popup: function(workspaceId, file, out) {
-				var data = Extension._data[workspaceId];
-				if (!data) {
-					return;
-				}
-				
-				var history = this.parse(out);
-				
-				var $content = $('<div>\
-					<div class="extension-git-list sscrollbar" style="height: 300px;">\
-						<ul></ul>\
-					</div>\
-				</div>');
-				
-				this.list(workspaceId, $content, history);
-				
-				$content.find('.extension-git-list').scroll(function() {
-					var top = $(this).scrollTop();
-					
-					if ($(this).attr('data-loaded')) {
-						$(this).off('scroll');
-						return true;
-					}
-					
-					if ($(this).attr('data-loading')) {
-						return true;
-					}
-					
-					if (top + $(this).height() >= this.scrollHeight - 10) {
-						$(this).attr('data-loading', true);
-						
-						Extension.action.getHistory(workspaceId, data.branch, $content.find('.extension-git-list > ul > li').length, file).done(function(out) {
-							var history = Extension.history.parse(out);
-							Extension.history.list(workspaceId, $content, history);
-							$content.find('.extension-git-list').removeAttr('data-loading');
-						});
-					}
-				});
-				
-				Popup.open({
-					title: 'Git - History' + (file ? ' (' + file + ')' : ''),
-					content: $content,
-					namespace: 'editor.git'
-				});
-			},
-			list: function(workspaceId, $content, history) {
-				var $list = $content.find('.extension-git-list > ul');
-				history.forEach(function(commit) {
-					var date = Fn.sprintf('%02d', commit.date.getHours()) 
-						+ ':' + Fn.sprintf('%02d', commit.date.getMinutes())
-						+ ', ' + Fn.sprintf('%02d', commit.date.getMonth()+1)
-						+ '/' + Fn.sprintf('%02d', commit.date.getDate())
-						+ '/' + commit.date.getFullYear();
-					
-					$list.append('<li class="git-history">\
-						<div class="inner">\
-							<div class="col"><div class="git-avatar" style="' + Extension.history.avatarStyle(commit.author, commit.email) + '">' + (commit.author || commit.email).substr(0, 1).toUpperCase() + '</div></div>\
-							<div class="col"><div class="info info-name">' + date + ' by <strong>' + (commit.author || commit.email) + '</strong></div></div>\
-							<div class="col"><div class="info info-message">' + commit.subject + '</div></div>\
-							<div class="col"><div class="info info-hash">' + commit.hashShort + '</div></div>\
-						</div>\
-					</div>');
-				});
-				
-				if (history.length < 100) {
-					$content.find('.extension-git-list').attr('data-loaded', true);
-				}
-			}
-		},
-		clone: {
-			popup: function(workspaceId) {
-			var data = Extension._data[workspaceId];
-				if (!data) {
-					return;
-				}
-				
-				var $content = $('<div>\
-					<div class="message">\
-						<fieldset>\
-							<dl>\
-								<dt>Git URL</dt>\
-								<dd><input type="text" name="input-url"></dd>\
-							</dl>\
-							<dl>\
-								<dt>Username</dt>\
-								<dd><input type="text" name="input-username" placeholder="Optional"></dd>\
-							</dl>\
-							<dl>\
-								<dt>Password</dt>\
-								<dd><input type="text" name="input-password" placeholder="Optional"></dd>\
-							</dl>\
-							<dl>\
-								<dt></dt>\
-								<dd><label for="git-input-save"><input type="checkbox" name="input-save" id="git-input-save"> Save credentials to remote url (in plain text)</label></dd>\
-							</dl>\
-						</fieldset>\
-						<div class="error"></div>\
-					</div>\
-					<div class="actions"></div>\
-				</div>');
-				
-				var $authInputs = $content.find(':input[name="input-username"],:input[name="input-password"],:input[name="input-save"]');
-				
-				$content.find(':input[name="input-url"]').on('input', function() {
-					var val = $(this).val().trim();
-					
-					if (val) {
-						if (/^https?:/.test(val)) {
-							$authInputs.prop("disabled", false);
-	
-							// Update the auth fields if the URL contains auth
-							var auth = /:\/\/([^:]+):?([^@]*)@/.exec(val);
-							if (auth) {
-								$content.find(':input[name="input-username"]').val(auth[1]);
-								$content.find(':input[name="input-password"]').val(auth[2]);
-							}
-						} else {
-							$authInputs.prop("disabled", true);
-						}
-					} else {
-						$authInputs.prop("disabled", false);
-					}
-				});
-				
-				$content.find('.actions').append(Popup.createBtn('Clone', 'black', function() {
-					var url = $content.find(':input[name="input-url"]').val().trim();
-					var username = $content.find(':input[name="input-username"]').val().trim();
-					var password = $content.find(':input[name="input-password"]').val().trim();
-					var save = $content.find(':input[name="input-save"]').is(':checked');
-					
-					if (!url) {
-						$content.find('.error').text('Please, fill a Git URL in.');
-						return false;
-					}
-					
-					var remote = Extension.parseUrl(url, username, password, save);
-					
-					var $result = Extension.onResult();
-					
-					Extension.action.clone(workspaceId, remote.url).done(function(out) {
-						Popup.close($result);
-						Explorer.action.list({id: workspaceId, path: '/'});
-						
-						Notification.open({
-							type: 'success',
-							title: 'Git',
-							description: 'Repository was successfully cloned.',
-							autoClose: true
-						});
-						
-						Extension.action.status(workspaceId);
-						
-						if (remote.url != remote.saveUrl) {
-							Extension.action.setRemoteUrl(workspaceId, 'origin', remote.saveUrl);
-						}
-					}).fail(function(err) {
-						return Extension.resultData($result, null, err);
-					});
-					
-					Popup.close($content);
-					
-					return false;
-				}));
-				$content.find('.actions').append(Popup.createBtn('Cancel', 'black'));
-				
-				Popup.open({
-					title: 'Git - Clone',
-					content: $content,
-					namespace: 'editor.git'
-				});
-			}
-		},
-		parseUrl: function(url, username, password, save) {
-			url = url.trim();
-			url = url.replace(/^http(s?):\/\/(.*)\@(.*)$/, 'http$1://$3');
-			var saveUrl = url;
-			
-			if (url.match(/^https?:/) && username) {
-				url = url.replace(/^http(s?):\/\//, 'http$1://' + encodeURIComponent(username) + ':' + encodeURIComponent(password) + '@');
-				
-				if (save) {
-					saveUrl = url;
-				}
-			}
-			
-			return {
-				url: url,
-				saveUrl: saveUrl,
-				username: username,
-				password: password
-			};
-		},
-		onResult: function(out, err) {
-			var $content = $('<div><pre class="extension-git-result"></pre></div>');
-			
-			$content.find('.extension-git-result').html((out || '') + (err || ''));
-			
-			Popup.open({
-				title: 'Git - Result',
-				content: $content,
-				namespace: 'editor.git'
-			});
-			
-			return $content;
-		},
-		resultData: function($result, out, err) {
-			$result.find('.extension-git-result').html((out || '') + (err || ''));
-		},
-		callback: function() {
-			var args = Array.prototype.slice.call(arguments);
-			var fn = args.length ? args.shift() : null;
-			
-			if (typeof fn == 'function') {
-				fn.apply(Extension, args);
-			}
-		},
-		getAuthor: function() {
-			var name = this.getStorage().name;
-			var email = this.getStorage().email;
-			
-			return name && email ? name + ' <' + email + '>' : null;
-		},
-		action: {
-			_run: function(workspaceId, commands) {
-				var d = $.Deferred();
-				
-				commands = Array.isArray(commands) ? commands : [commands];
-				
-				Socket.send('workspace.action', {
-					id: workspaceId,
-					path: Extension._data[workspaceId].directory || '/',
-					action: 'exec',
-					command: commands.map(function(command) {
-						return 'git ' + command;
-					}).join('; ')
-				}, null, function(data) {
-					if (data.stderr) {
-						d.reject(data.stderr);
-					} else {
-						d.resolve(data.stdout);
-					}
-				});
-				
-				return d.promise();
-			},
-			status: function(workspaceId, path) {
-				var d = $.Deferred();
-				var i;
-				
-				this._run(workspaceId, 'status -u -b --porcelain' + (path ? ' "' + path + '"' : '')).done(function(out) {
-					var parsed = Extension.status.parse(out);
-					
-					var origFiles = parsed.files;
-					
-					if (path) {
-						var files = Extension._data[workspaceId].files || [];
-						
-						for (i = files.length-1; i >= 0; i--) {
-							var file = files[i].file;
-							
-							if (file == path || file.substr(0, path.length + 1) == path + '/') {
-								files.splice(i, 1);
-							}
-						}
-						
-						files.push.apply(files, origFiles);
-						parsed.files = files;
-					}
-					
-					parsed.files.sort(function(a, b) {
-						if (a.file < b.file) {
-							return -1;
-						}
-						if (a.file > b.file) {
-							return 1;
-						}
-						return 0;
-					});
-					
-					if (parsed.needReset.length) {
-						Extension.action.unstage(workspaceId, parsed.needReset).always(function() {
-							Extension.action.status(workspaceId, path).done(function(data) {
-								d.resolve(data);
-							}).fail(function() {
-								d.reject();
-							});
-						});
-					} else {
-						delete parsed.needReset;
-						Extension.update(workspaceId, path ? {files: parsed.files} : parsed);
-						d.resolve(path ? origFiles : parsed);
-					}
-				}).fail(function(err) {
-					Extension.update(workspaceId, null);
-					d.reject(err);
-				});
-				
-				return d.promise();
-			},
-			init: function(workspaceId) {
-				return this._run(workspaceId, 'init');
-			},
-			clone: function(workspaceId, url) {
-				return this._run(workspaceId, 'clone ' + url + ' .');
-			},
-			stage: function(workspaceId, path) {
-				path = Array.isArray(path) ? path : [path];
-				
-				path = path.map(function(item) {
-					return '"' + Fn.quotes(item) + '"';
-				}).join(' ');
-				
-				return this._run(workspaceId, 'add -A ' + path);
-			},
-			unstage: function(workspaceId, path) {
-				path = Array.isArray(path) ? path : [path];
-				
-				path = path.map(function(item) {
-					return '"' + Fn.quotes(item) + '"';
-				}).join(' ');
-				
-				return this._run(workspaceId, 'reset -- ' + path);
-			},
-			commit: function(workspaceId, message, amend, cb) {
-				var author = Extension.getAuthor();
-				
-				return this._run(workspaceId, 'commit -m "' + message.replace(/\"/, '\\\"') + '" ' + (amend ? '--amend' : '') + ' ' + (author ? '--author="' + author.replace(/\"/, '\\\"') + '"' : ''));
-			},
-			getLastCommitMessage: function(workspaceId, cb) {
-				return this._run(workspaceId, 'log -1 --pretty=%B');
-			},
-			checkout: function(workspaceId, path, cb) {
-				path = Array.isArray(path) ? path : [path];
-				
-				path = path.map(function(item) {
-					return '"' + Fn.quotes(item) + '"';
-				}).join(' ');
-				
-				return this._run(workspaceId, 'checkout ' + path);
-			},
-			getBranches: function(workspaceId, cb) {
-				var d = $.Deferred();
-				
-				this._run(workspaceId, 'branch -a --no-color').done(function(out) {
-					var current = null;
-					var branches = (out || '').split("\n").reduce(function(arr, line) {
-						var name = line.trim(),
-							remote = null;
-
-						if (!name || name.indexOf("->") !== -1) {
-							return arr;
-						}
-
-						if (name.indexOf("* ") === 0) {
-							name = name.substring(2);
-							current = name;
-						}
-
-						if (name.indexOf("remotes/") === 0) {
-							name = name.substring("remotes/".length);
-							remote = name.substring(0, name.indexOf("/"));
-						}
-
-						arr.push({
-							name: name,
-							remote: remote
-						});
-						return arr;
-					}, []);
-					
-					if (!branches.length) {
-						branches.push({
-							name: 'master',
-							remote: null
-						});
-						
-						current = 'master';
-					}
-					
-					Extension.update(workspaceId, {
-						branches: branches,
-						branch: current
-					});
-					
-					d.resolve(branches, current);
-				}).fail(function(err) {
-					Extension.update(workspaceId, {
-						branches: [],
-						branch: null
-					});
-					
-					d.reject(err);
-				});
-				
-				return d.promise();
-			},
-			createBranch: function(workspaceId, branch, origin, cb) {
-				return this._run(workspaceId, 'checkout -b ' + branch + ' ' + (origin ? origin : ''));
-			},
-			deleteBranch: function(workspaceId, branch, force, cb) {
-				return this._run(workspaceId, 'branch --no-color -' + (force ? 'D' : 'd') + ' ' + branch);
-			},
-			mergeBranch: function(workspaceId, branch, message, noFf, cb) {
-				return this._run(workspaceId, 'merge ' + (noFf ? '--no-ff' : '') + ' ' + (message ? '-m "' +  message + '"' : '') + ' ' + branch);
-			},
-			rebaseBranch: function(workspaceId, branch, cb) {
-				return this._run(workspaceId, 'rebase --ignore-date  ' + branch);
-			},
-			getRemotes: function(workspaceId, cb) {
-				var d = $.Deferred();
-				
-				this._run(workspaceId, 'remote -v').done(function(out) {
-					var remoteNames = [];
-					var remotes =  !out ? [] : out.replace(/\((push|fetch)\)/g, "").split("\n").reduce(function(arr, line) {
-						var s = line.trim().split("\t");
-						
-						if (!s[0] || remoteNames.indexOf(s[0]) !== -1) {
-							return arr;
-						}
-						
-						remoteNames.push(s[0]);
-						
-						arr.push({
-							name: s[0],
-							url: s[1]
-						});
-						return arr;
-					}, []);
-					
-					remotes.sort(function(a, b) {
-						if (a.name == 'origin') {
-							return -1;
-						} else if (b.name == 'origin') {
-							return 1;
-						} else {
-							return a.name > b.name;
-						}
-					});
-					
-					Extension.update(workspaceId, {
-						remotes: remotes
-					});
-					
-					d.resolve(remotes);
-				}).fail(function(err) {
-					Extension.update(workspaceId, {
-						remotes: []
-					});
-					
-					d.reject(err);
-				});
-				
-				return d.promise();
-			},
-			createRemote: function(workspaceId, name, url, cb) {
-				return this._run(workspaceId, 'remote add ' + name + ' ' + url);
-			},
-			deleteRemote: function(workspaceId, name, cb) {
-				return this._run(workspaceId, 'remote rm ' + name);
-			},
-			fetchRemote: function(workspaceId, name, cb) {
-				return this._run(workspaceId, 'fetch ' + name);
-			},
-			mergeRemote: function(workspaceId, remote, branch, ffOnly, noCommit, cb) {
-				return this._run(workspaceId, 'merge ' + (ffOnly ? '--ff-only' : '') + ' ' + (noCommit ? '--no-commit --no-ff' : '') + ' ' + remote + '/' + branch);
-			},
-			rebaseRemote: function(workspaceId, remote, branch, cb) {
-				return this._run(workspaceId, 'rebase ' + remote + '/' + branch);
-			},
-			resetRemote: function(workspaceId, remote, branch, cb) {
-				return this._run(workspaceId, 'reset --soft ' + remote + '/' + branch);
-			},
-			setRemoteUrl: function(workspaceId, remote, url, cb) {
-				return this._run(workspaceId, 'remote set-url ' + remote + ' ' + url);
-			},
-			pushRemote: function(workspaceId, remote, branch, forced, remove, cb) {
-				return this._run(workspaceId, 'push ' + remote + ' ' + branch + ' ' + (forced ? '--force' : '') + ' ' + (remove ? '--delete' : '') + ' --porcelain');
-			},
-			getHistory: function(workspaceId, branch, skipCount, file, cb) {
-				var separator = "_._",
-					newline = "_.nw._",
-					format = [
-						"%h", // abbreviated commit hash
-						"%H", // commit hash
-						"%an", // author name
-						"%ai", // author date, ISO 8601 format
-						"%ae", // author email
-						"%s", // subject
-						"%b", // body
-						"%d" // tags
-					].join(separator) + newline;
-					
-				return this._run(workspaceId, 'log -100 ' + (skipCount ? '--skip=' + skipCount : '' ) + ' --format=' + format + ' ' + branch + ' -- ' + (file ? file : ''));
-			},
-			diffFile: function(workspaceId, path) {
-				var files = Extension._data[workspaceId].files;
-				
-				var isStaged = false;
-				
-				for (var i = 0; i < files.length; i++) {
-					if (files[i].file == path) {
-						isStaged = files[i].status.indexOf(FILE_STATUS.STAGED) !== -1;
-						break;
-					}
-				}
-				
-				
-				return this._run(workspaceId, 'diff --no-ext-diff --no-color' + (isStaged ? ' --staged' : '') + ' -- "' + path + '"');
+			if (git) {
+				git.status();
 			}
 		}
-	});
+		
+		onWorkspaceDisconnected(workspace) {
+			if (this.data[workspace.id]) {
+				this.data[workspace.id].destroy();
+				delete this.data[workspace.id];
+			}
+		}
+		
+		onWorkspaceActive(workspace) {
+			this.updateToolbar();
+			this.updateSidepanel();
+		}
+		
+		updateSidepanel() {
+			let git = this.active;
+			
+			if (!git) {
+				// if not git available, disable sidepanel
+				this.sidepanel.canOpen = false;
+				
+				// and close it if opened, will call onPanelClose and clear it
+				this.sidepanel.isToggled && App.toggleSidepanel(this.name, false);
+				
+				return;
+			}
+			
+			this.sidepanel.canOpen = true;
+			
+			if (this.sidepanel.isToggled) {
+				this.sidepanel.git = git;
+			}
+		}
+		
+		updateToolbar() {
+			let git = this.active;
+			
+			if (!git || EditorRevisions.isOpened) {
+				this.toolbarItem.el.style.display = 'none';
+				return;
+			}
+			
+			if (git.isLoading) {
+				this.toolbarItem.nameEl.style.display = 'none';
+				this.toolbarItem.loaderEl.style.display = 'inline-block';
+			} else {
+				this.toolbarItem.nameEl.style.display = 'inline';
+				this.toolbarItem.loaderEl.style.display = 'none';
+				
+				this.toolbarItem.nameEl.textContent = git.branch || '';
+			}
+			
+			this.toolbarItem.el.style.display = 'inline-block';
+		}
+		
+		onGitUpdate(git) {
+			if (this.active !== git) {
+				return;
+			}
+			
+			this.updateSidepanel();
+		}
+		
+		onGitBranch(git, branch) {
+			if (this.active !== git) {
+				return;
+			}
+			
+			this.updateToolbar();
+		}
+		
+		// sidepanel events
+		onPanelOpen() {
+			this.sidepanel.git = this.active;
+			this.sidepanel.selectTab(this.storage.sidepanelTab);
+		}
+		
+		onPanelClose() {
+			this.sidepanel.git = null;
+			this.sidepanel.clear();
+		}
+		
+		onPanelResize(width) {
+			this.storage.panelWidth = width;
+			this.storage.save();
+		}
+		
+		onPanelTab(name) {
+			this.storage.sidepanelTab = name;
+			this.storage.save();
+		}
+		
+		// revisions events
+		onRevisionsOpen() {
+			this.updateToolbar();
+		}
+		
+		onRevisionsClose() {
+			this.updateToolbar();
+		}
+		
+		// handle file updates
+		onFileUpdate(data) {
+			let git = this.data[data.id];
+			
+			if (!git || !git.isInit) {
+				return;
+			}
+			
+			let files = [data.path.substr(1)];
+			
+			if (data.pathTo) {
+				files.push(data.pathTo.substr(1));
+			}
+			
+			git.statusFiles(files).catch(e => {
+				// ignore
+			});
+		}
+		
+		onFileSave(session) {
+			let git = this.data[session.storage.workspaceId];
+			
+			if (!git || !git.isInit) {
+				return;
+			}
+			
+			git.statusFiles(session.storage.path.substr(1)).catch(e => {
+				// ignore
+			});
+		}
+		
+		// sharing between collaborators
+		onShare(data) {
+			let git = this.data[data.id];
+			
+			if (!git || !git.isInit) {
+				return;
+			}
+			
+			git.$setCurrentBranch(data.name);
+		}
+	}
 
-	module.exports = Extension;
+	module.exports = new Extension();
 });

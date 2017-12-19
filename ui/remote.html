@@ -1,0 +1,15 @@
+<form @submit.prevent class="popup-inset">
+	<fieldset>
+		
+		<dl>
+			<dt>Name</dt>
+			<dd><input type="text" v-model="form.data.name"></dd>
+		</dl>
+		<dl>
+			<dt>URL</dt>
+			<dd><input type="text" v-model="form.data.url"></dd>
+		</dl>
+		
+	</fieldset>
+	<div class="error" v-if="form.message">{{form.message}}</div>
+</form>

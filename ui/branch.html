@@ -1,0 +1,19 @@
+<form @submit.prevent class="popup-inset">
+	<fieldset>
+		
+		<dl>
+			<dt>Origin branch</dt>
+			<dd>
+				<select v-model="form.data.origin">
+					<option v-for="branch in form.branches" :value="branch">{{branch}}</option>
+				</select>
+			</dd>
+		</dl>
+		<dl>
+			<dt>Branch name</dt>
+			<dd><input type="text" v-model="form.data.name"></dd>
+		</dl>
+		
+	</fieldset>
+	<div class="error" v-if="form.message">{{form.message}}</div>
+</form>
