@@ -158,7 +158,9 @@ define(function(require, exports, module) {
 			[fn]('item.remove', this.onItemRemove)
 			[fn]('item.update', this.onItemUpdate);
 			
-			git.files.lists.default[fn]('update', this.onTreeListUpdate);
+			if (git.files) {
+				git.files.lists.default[fn]('update', this.onTreeListUpdate);
+			}
 		}
 		
 		onSelectTab(e) {

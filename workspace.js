@@ -812,7 +812,8 @@ define(function(require, exports, module) {
 		// destroy
 		destroy() {
 			this.removeAllListeners();
-			this.files = [];
+			this.files.destroy();
+			this.files = null;
 		}
 	}
 	
