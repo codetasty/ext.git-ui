@@ -1122,6 +1122,8 @@ define(function(require, exports, module) {
 			.on('delete', this.onFileUpdate);
 			
 			EditorEditors.on('save', this.onFileSave);
+			
+			this.emit('init');
 		}
 		
 		destroy() {
