@@ -503,7 +503,7 @@ define(function(require, exports, module) {
 				
 				return null;
 			}).then(res => {
-				if (res === null) {
+				if (res === null || !this.files) {
 					return null;
 				}
 				
@@ -545,7 +545,9 @@ define(function(require, exports, module) {
 		}
 		
 		init() {
-			return this.command('init');
+			return this.command('init').then(res => {
+				return this.status();
+			});
 		}
 		
 		clone(url) {

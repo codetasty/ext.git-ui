@@ -221,8 +221,13 @@ define(function(require, exports, module) {
 		notInit() {
 			this.showMessage($(`<div>
 				<span>Git repository not initialised.</span>
-				<button class="button">Init</button>
+				<button class="button action-init">Init</button>
 			</div>`)[0]);
+			
+			this.message.querySelector('.action-init').addEventListener('click', () => {
+				this.init();
+			});
+			
 		}
 		
 		showMessage(message) {
@@ -240,6 +245,12 @@ define(function(require, exports, module) {
 		resize() {
 			this.collection.resize();
 			this.scrollbar.update();
+		}
+		
+		init() {
+			if (this.git.isNotInit) {
+				this.git.init();
+			}
 		}
 		
 		files() {
@@ -1259,6 +1270,7 @@ define(function(require, exports, module) {
 			}
 			
 			this.updateSidepanel();
+			this.updateToolbar();
 		}
 		
 		onGitBranch(git, branch) {

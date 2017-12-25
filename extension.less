@@ -1,14 +1,5 @@
 // out: ., plugin: css-autoprefixer
 
-@color-sidebar: #121417;
-@color-bg: #21252b;
-@color-content: #282c34;
-@color-border: #000;
-@color-selector: #474164;
-@color-brand: #529cf1;
-@color-purple: #8375b9;
-
-
 .extension-git-panel {
 	padding-top: 34px;
 		
@@ -27,20 +18,20 @@
 			text-align: center;
 			font-size: 16px;
 			cursor: pointer;
-			color: rgba(255, 255, 255, 0.5);
+			color: var(--color-text-light);
 			transition: background-color 300ms, color 300ms;
 			
 			&:not(:first-child) {
-				border-left: 1px solid #282c34;
+				border-left: 1px solid var(--color-content);
 			}
 			
 			&:hover {
-				color: #fff;
+				color: var(--color-text);
 			}
 			
 			&.active {
-				color: #fff;
-				background-color: #282c34;
+				color: var(--color-text);
+				background-color: var(--color-content);
 			}
 		}
 	}
@@ -54,14 +45,14 @@
 			line-height: 18px;
 			font-size: 14px;
 			padding: 6px 15px;
-			background-color: #474163;
+			background-color: var(--color-button);
 			border-radius: 2px;
-			color: #fff;
+			color: var(--color-button-text, '#fff');
 			cursor: pointer;
 			transition: background-color 300ms;
 			
 			&:hover {
-				background-color: lighten(#474163, 5%);
+				background-color: var(--color-button-hover);
 			}
 		}
 		
@@ -116,7 +107,7 @@
 						left: 15px;
 						margin: -8px 0 0 0;
 						box-sizing: border-box;
-						background-color: darken(@color-bg, 10%);
+						background-color: var(--color-sidebar);
 						border-radius: 2px;
 						transition: opacity 300ms;
 						
@@ -160,19 +151,19 @@
 					flex: 0 0 auto;
 					width: 30px;
 					background-color: transparent;
-					color: #afafaf;
+					color: var(--color-text-light);
 					line-height: 30px;
 					transition: color 300ms;
 					cursor: pointer;
 					font-size: 16px;
 					
 					&:hover {
-						color: #fff;
+						color: var(--color-text);
 					}
 				}
 				
 				&:hover {
-					background-color: rgba(255, 255, 255, 0.05);
+					background-color: var(--color-hover);
 				}
 				
 				&.checked {
@@ -198,14 +189,15 @@
 				}
 				
 				&.selected {
-					background-color: #474163;
+					background-color: var(--color-selector);
+					color: #fff;
 				}
 			}
 		}
 		
 		> .bottombar {
-			border-top: 1px solid @color-border;
-			background-color: @color-bg;
+			border-top: 1px solid var(--color-border);
+			background-color: var(--color-sidebar);
 			
 			> .message {
 				padding: 4px;
@@ -215,12 +207,11 @@
 					width: 100%;
 					height: 60px;
 					padding: 5px;
-					background-color: @color-content;
+					background-color: var(--color-content);
 					border-radius: 2px;
 					box-sizing: border-box;
 					font-size: 14px;
-					color: #fff;
-					border: 1px solid @color-border;
+					color: var(--color-text);
 					resize: none;
 				}
 			}
@@ -243,21 +234,19 @@
 					
 					> button {
 						height: 26px;
-						background-color: @color-content;
+						background-color: var(--color-content);
 						border-radius: 2px;
 						padding: 0 10px;
 						box-sizing: border-box;
 						font-size: 13px;
 						cursor: pointer;
-						color: #fff;
+						color: var(--color-text);
 						transition: background-color 300ms;
 						
-						&:hover {
-							background-color: lighten(@color-content, 5%);
-						}
-						
+						&:hover,
 						&.selected {
-							background-color: @color-selector;
+							background-color: var(--color-button);
+							color: #fff;
 						}
 					}
 				}
