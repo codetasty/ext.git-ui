@@ -32,7 +32,7 @@ define(function(require, exports, module) {
 		update(item) {
 			this.item = item;
 			
-			this.el.style.paddingLeft = (item.level * 15) + 'px';
+			this.el.style.paddingLeft = ((item.level - 1) * 15) + 'px';
 			this.nameSpan.textContent = item.name;
 		}
 	}
@@ -80,7 +80,7 @@ define(function(require, exports, module) {
 		update(item) {
 			this.item = item;
 			
-			this.el.style.paddingLeft = (item.level * 15) + 'px';
+			this.el.style.paddingLeft = ((item.level - 1) * 15) + 'px';
 			this.nameSpan.textContent = item.name;
 			this.updateState();
 		}

@@ -408,7 +408,8 @@ define(function(require, exports, module) {
 			
 			switch (this.selectedTab) {
 				case 'file':
-					return this.git.files.lists.default.length;
+					// ignore root folder, - 1
+					return this.git.files.lists.default.length - 1;
 				case 'branch':
 					return this.git.branches.length;
 				case 'remote':
@@ -424,7 +425,8 @@ define(function(require, exports, module) {
 			
 			switch (this.selectedTab) {
 				case 'file':
-					item = this.git.files.lists.default[index];
+					// ignore root folder, + 1
+					item = this.git.files.lists.default[index+1];
 					break;
 				case 'branch':
 					item = this.git.branches[index];
@@ -970,14 +972,16 @@ define(function(require, exports, module) {
 			
 			switch (type) {
 				case 'item':
-					let cell = this.collection.cellForIndex(index);
+					// ignore root folder, - 1
+					let cell = this.collection.cellForIndex(index-1);
 					cell && cell.update(length, insert);
 				break;
 				
 				case 'insert':
 				case 'delete':
 				case 'deleteInsert':
-					this.collection[type](index, length, insert);
+					// ignore root folder, - 1
+					this.collection[type](index-1, length, insert);
 					this.scrollbar.update();
 				break;
 			}

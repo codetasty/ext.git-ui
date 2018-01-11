@@ -34,6 +34,16 @@ define(function(require, exports, module) {
 		UNTRACKED: "Untracked",
 	};
 	
+	class ShellEscapedArg {
+		constructor(arg) {
+			this.arg = arg;
+		}
+		
+		toString() {
+			return this.arg;
+		}
+	}
+	
 	class Branch {
 		constructor(name, remote, isCurrent) {
 			this.name = name;
@@ -401,7 +411,7 @@ define(function(require, exports, module) {
 			args.unshift('git');
 			
 			for (var i = 0; i < args.length; i++) {
-				if (!(/[^A-Za-z0-9_\/:=-]/.test(args[i]))) {
+				if (args[i] instanceof ShellEscapedArg || !(/[^A-Za-z0-9_\/:=-]/.test(args[i]))) {
 					continue;
 				}
 				
@@ -423,6 +433,10 @@ define(function(require, exports, module) {
 				
 				return res.stdout;
 			});
+		}
+		
+		escapedArg(arg) {
+			return new ShellEscapedArg(arg);
 		}
 		
 		parseStatus(lines, parseBranch) {
@@ -498,7 +512,7 @@ define(function(require, exports, module) {
 		}
 		
 		status() {
-			return this.command('status', '-u', '-b', '--porcelain').catch(e => {
+			return this.command('status', '-u', '-b', '--porcelain', this.escapedArg('|'), 'head', '-1000').catch(e => {
 				this._status = GitWorkspace.Status.notInit;
 				
 				return null;
