@@ -1,0 +1,24 @@
+{
+	"name": "git",
+	"settings": {
+		"name": "",
+		"email": ""
+	},
+	"storage": {
+		"panelWidth": null,
+		"sidepanelTab": "file"
+	},
+	"css": [
+		"extension"
+	],
+	"bundle": [
+		"text!ui/branch.html",
+		"text!ui/merge.html",
+		"text!ui/pullPush.html",
+		"text!ui/remote.html",
+		"utils.js",
+		"cell.js",
+		"workspace.js",
+		"panel.js"
+	]
+}

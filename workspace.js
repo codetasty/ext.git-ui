@@ -129,7 +129,7 @@ define(function(require, exports, module) {
 			this.branches = [];
 			this.remotes = [];
 			this.files = new Tree.Tree('Workspace');
-			this.directory = directory || '/';
+			this._directory = directory || '/';
 			
 			this.getSettings = null;
 		}
@@ -161,6 +161,16 @@ define(function(require, exports, module) {
 			var email = this.getSettings().email;
 			
 			return name && email ? name + ' <' + email + '>' : null;
+		}
+		
+		get directory() {
+			return this._directory;
+		}
+		
+		set directory(dir) {
+			this._directory = dir;
+			
+			this.status(true);
 		}
 		
 		/**
@@ -427,7 +437,7 @@ define(function(require, exports, module) {
 				command: args.join(' '),
 			}).then(res => {
 				if (res.stderr) {
-					res.stderr = res.stderr.replace(/^error: /i, '');
+					res.stderr = res.stderr.replace(/^(error|fatal): /i, '');
 					throw new Error(res.stderr);
 				}
 				
@@ -511,7 +521,12 @@ define(function(require, exports, module) {
 			return status;
 		}
 		
-		status() {
+		status(hard) {
+			if (hard) {
+				this._status = GitWorkspace.Status.loading;
+				this.emit('update', this);
+			}
+			
 			return this.command('status', '-u', '-b', '--porcelain', this.escapedArg('|'), 'head', '-1000').catch(e => {
 				this._status = GitWorkspace.Status.notInit;
 				
@@ -559,8 +574,16 @@ define(function(require, exports, module) {
 		}
 		
 		init() {
+			this._status = GitWorkspace.Status.loading;
+			this.emit('update', this);
+			
 			return this.command('init').then(res => {
 				return this.status();
+			}).catch(e => {
+				this._status = GitWorkspace.Status.notInit;
+				this.emit('update', this);
+				
+				throw e;
 			});
 		}
 		

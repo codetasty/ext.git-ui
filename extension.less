@@ -42,6 +42,7 @@
 		flex-direction: column;
 		
 		.button {
+			display: block;
 			line-height: 18px;
 			font-size: 14px;
 			padding: 6px 15px;
@@ -60,10 +61,25 @@
 			margin: auto 0;
 			padding: 20px;
 			text-align: center;
-			font-size: 16px;
+			font-size: 0;
 			
-			.button {
-				margin-top: 15px;
+			.spinner {
+				margin: 0 auto;
+			}
+			
+			p {
+				font-size: 16px;
+				padding-bottom: 10px;
+			}
+			
+			.buttons {
+				padding-top: 5px;
+				display: flex;
+				
+				> button {
+					margin: 0 2px;
+					flex: 1 1 auto;
+				}
 			}
 		}
 		
@@ -233,6 +249,7 @@
 					}
 					
 					> button {
+						display: block;
 						height: 26px;
 						background-color: var(--color-content);
 						border-radius: 2px;
@@ -241,12 +258,24 @@
 						font-size: 13px;
 						cursor: pointer;
 						color: var(--color-text);
+						position: relative;
 						transition: background-color 300ms;
 						
 						&:hover,
 						&.selected {
 							background-color: var(--color-button);
 							color: #fff;
+						}
+						
+						&.loading {
+							color: transparent;
+						}
+						
+						> .spinner {
+							position: absolute;
+							top: 50%;
+							left: 50%;
+							margin: -8px 0 0 -8px;
 						}
 					}
 				}
