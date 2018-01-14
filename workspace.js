@@ -435,7 +435,7 @@ define(function(require, exports, module) {
 				path: this.directory,
 				action: 'exec',
 				command: args.join(' '),
-			}).then(res => {
+			}, null, 30000).then(res => {
 				if (res.stderr) {
 					res.stderr = res.stderr.replace(/^(error|fatal): /i, '');
 					throw new Error(res.stderr);
