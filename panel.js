@@ -190,6 +190,8 @@ define(function(require, exports, module) {
 					this.remotes();
 				break;
 			}
+			
+			this.scrollbar.reset();
 		}
 		
 		loading() {
@@ -329,7 +331,6 @@ define(function(require, exports, module) {
 			let git = this.git;
 			
 			this.collection.reload();
-			this.scrollbar.update();
 		}
 		
 		branches() {
@@ -357,7 +358,6 @@ define(function(require, exports, module) {
 			}
 			
 			this.collection.reload();
-			this.scrollbar.update();
 		}
 		
 		loadBranches() {
@@ -418,7 +418,6 @@ define(function(require, exports, module) {
 			}
 			
 			this.collection.reload();
-			this.scrollbar.update();
 		}
 		
 		loadRemotes() {
